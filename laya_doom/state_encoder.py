@@ -112,14 +112,29 @@ class StateEncoder:
         self.config = config or EncoderConfig()
         self._history: list[HistoryEntry] = []
         self._visited_cells: set[tuple[int, int]] = set()
+        # Set by encode() whenever include_area_hint is on — exposed so
+        # controller.run_episode can read the real AREA new/revisited
+        # signal directly (for ExplorationNudgeConfig's circling detector)
+        # without re-deriving it by parsing the encoded text. Ported from
+        # the sibling Needle project's own `last_area_new`.
+        self.last_area_new: bool | None = None
 
     def reset(self) -> None:
         self._history.clear()
         self._visited_cells.clear()
+        self.last_area_new = None
 
     def _area_cell(self, perception: Perception) -> tuple[int, int]:
         size = self.config.area_cell_size
         return (int(perception.x // size), int(perception.y // size))
+
+    @property
+    def visited_cells(self) -> frozenset[tuple[int, int]]:
+        """Read-only view of the AREA-hint visited-cells grid, exposed for
+        controller.py's FrontierExplorationConfig (see wayfinding.py) to
+        compute a directed exploration heading from, the same way
+        ``last_area_new`` is exposed for the circling detector above."""
+        return frozenset(self._visited_cells)
 
     def record(self, action: str, result: str) -> None:
         if self.config.memory_mode != "rolling":
@@ -163,7 +178,8 @@ class StateEncoder:
 
         if self.config.include_area_hint:
             cell = self._area_cell(perception)
-            lines.append(f"AREA {'revisited' if cell in self._visited_cells else 'new'}")
+            self.last_area_new = cell not in self._visited_cells
+            lines.append(f"AREA {'new' if self.last_area_new else 'revisited'}")
             self._visited_cells.add(cell)
 
         if self.config.memory_mode in ("prev_state", "rolling") and last_action is not None:

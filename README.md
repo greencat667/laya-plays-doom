@@ -41,6 +41,16 @@ model, took it from worse-than-random (0 kills/5 episodes) to matching
 the hand-written heuristic baseline: real, verified 10-episode numbers,
 `mean_kills=1.00`, `completion_rate=1.00`, `mean_latency_ms=22.8` — see
 [Controller comparison, real run](#controller-comparison-real-run).
+**Since then**, real wayfinding was added on top (verified `ANGLE`
+convention, frontier-directed exploration, a secret-door search, a
+wall-following fallback) and three more real bugs were found and fixed on
+long real `--scenario level` runs (a wall-hugging freeze, and two
+"repeat the same fruitless action forever" stalls) — see
+[Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs)
+for the full real before/after data. Exploration coverage, survival, and
+distance travelled all improved measurably on real runs; **a real level
+exit (`completed=True`) was still never observed**, reported plainly
+rather than glossed over.
 
 ## Architecture
 
@@ -503,6 +513,397 @@ and missing) each fixed with its own targeted, logged mechanism — a
 deterministic bearing check — not from repeatedly rewording criteria
 until a number looked right.
 
+## Stage 4/5: real wayfinding, secret search, and three more real bugs
+
+Both this project's own Roadmap and the sibling Needle project's explicitly
+called out the same gap: perception.py deliberately never trusts ViZDoom's
+`ANGLE` sign convention (see its module docstring), so neither project had
+ever built real "which way is unexplored" wayfinding — only a blind
+circling detector (`ExplorationNudgeConfig`). This section closes that gap
+for real: `ANGLE` is verified empirically before being trusted for
+anything, ViZDoom's automap buffer is investigated and (honestly)
+rejected, real frontier-directed exploration is built and measured, and
+three more real bugs were found and fixed along the way by running long
+episodes rather than assuming the fixes above were the end of the story.
+
+### Verified: ANGLE's real sign convention
+
+Before using `ANGLE` for anything, its actual behaviour was measured
+directly against a real `DoomEnv`, the same way every other fact in this
+README is established — see `scripts/verify_angle.py` and
+`scripts/verify_angle_movement.py` (both runnable, not one-off snippets
+thrown away after use). Real output from this repository:
+
+```
+$ python -m scripts.verify_angle
+=== initial ===
+angle=0.0 x=-384.0 y=32.0
+
+=== 5x turn_left (env.execute, real ViZDoom actions) ===
+step 0: angle=5.273 delta=+5.273
+step 1: angle=12.305 delta=+7.031
+step 2: angle=22.852 delta=+10.547
+step 3: angle=33.398 delta=+10.547
+step 4: angle=43.945 delta=+10.547
+
+=== 5x turn_right (env.execute, real ViZDoom actions) ===
+step 0: angle=33.398 delta=-10.547
+step 1: angle=22.852 delta=-10.547
+step 2: angle=12.305 delta=-10.547
+step 3: angle=1.758 delta=-10.547
+step 4: angle=351.211 delta=+349.453   # wraps 0/360, i.e. -10.547 mod 360
+
+=== raw 1-tic button press (bypassing actions.py's tic counts) ===
+1 tic turn_left: angle 351.211 -> 354.727 (delta +3.516)
+1 tic turn_right: angle 354.727 -> 351.211 (delta -3.516)
+```
+
+```
+$ python -m scripts.verify_angle_movement
+after turning left ~9x: angle=86.13 x=-384.00 y=32.00
+after move_forward: dx=+0.47 dy=+7.10
+  predicted unit dir=(+0.067,+0.998)  actual unit dir=(+0.067,+0.998)
+
+after turning left another ~9x: angle=172.27
+after move_forward: dx=-7.01 dy=+1.55
+  predicted unit dir=(-0.991,+0.135)  actual unit dir=(-0.976,+0.216)
+```
+
+Conclusion, backed by real printed numbers, not the ViZDoom docs alone:
+`ANGLE` is degrees, wraps 0–360, `turn_left` reliably **increases** it
+(~10.5°/action once turning speed ramps up, ~3.5°/tic), `turn_right`
+reliably **decreases** it by the same magnitude, and the real forward
+movement direction matches `(cos(angle), sin(angle))` in
+`POSITION_X`/`POSITION_Y` space — the standard math convention, close
+enough at both tested headings (exact at 86°, same sign and rough
+magnitude at 172° — collision/wall drag plausibly explains the small
+residual there). `laya_doom/wayfinding.py` is built directly on this,
+and only this — bearing/aiming everywhere else in the pipeline stays
+screen-space, unchanged, per perception.py's own module docstring.
+
+### Automap buffer investigation — tried, and honestly not adopted
+
+`vzd.AutomapMode` really does exist with exactly `NORMAL`, `OBJECTS`,
+`OBJECTS_WITH_SIZE`, `WHOLE` (confirmed against the installed `vizdoom`
+package, not assumed from docs). `doom_env.py`'s `DoomEnvConfig` now
+exposes `automap_buffer_enabled`/`automap_mode` knobs (still `False` by
+default — see below for why), and `scripts/probe_automap.py` exercises
+them through the same `DoomEnv` real runs use, dumping real PNGs and
+doing simple numpy analysis. Real captured output from this repository:
+
+```
+$ python -m scripts.probe_automap --out-dir /tmp/automap_probe
+00_start: bg-color=(111, 87, 67)  non-bg (drawn) fraction=0.0001
+01_after_moving: bg-color=(111, 87, 67)  non-bg (drawn) fraction=0.0322
+02_after_turning: bg-color=(111, 87, 67)  non-bg (drawn) fraction=0.0349
+send_game_command('iddt') -> "Unknown command "iddt"" (real console output)
+03_after_iddt_attempt: bg-color=(111, 87, 67)  non-bg (drawn) fraction=0.0349
+```
+
+Looking at the actual saved images (320×240 RGB): the background fill is a
+uniform brownish colour — **not** literal black, and critically, **the
+same colour for both revealed and un-revealed regions**. Only wall-line
+geometry the player has actually been near gets drawn (a thin darker
+outline plus a small white player-position arrow); open floor space the
+player hasn't walked near yet is indistinguishable, pixel-for-pixel, from
+open floor space fully inside an already-toured room. This matches real
+Doom automap behaviour (undiscovered areas simply aren't drawn, per the
+Freedoom manual's own "grey/not normally shown" description of the
+in-game Tab-map) but means a naive "black-pixel fraction = unexplored"
+heuristic — the first thing tried — doesn't work: there's no black to
+count. The non-bg (drawn-line) fraction does grow with real exploration
+(0.0001 → 0.0322 → 0.0349 above), so it's a real, if coarse, "how much
+wall geometry have I revealed" signal, but it can't distinguish "open
+floor I haven't reached yet" from "open floor already fully explored" —
+exactly the distinction frontier-directed exploration needs, and exactly
+what the verified-`ANGLE` + visited-cells-grid approach below already
+gives directly and precisely, from data perception.py already computes.
+The classic Doom `iddt` "reveal full map" console cheat was also tried
+purely as a potential ground-truth validation aid for this investigation
+(never intended for the shipped agent) — real result: ViZDoom's console
+doesn't implement it (`Unknown command "iddt"`), so that avenue is closed
+too. **Conclusion: investigated for real, with real images and numbers,
+and honestly not folded into the decision pipeline** — it doesn't add
+anything the verified-ANGLE approach doesn't already give more directly,
+and costs an extra rendered buffer every tic for it. `automap_buffer_enabled`
+stays `False` by default; the config knob and probe script are kept for
+anyone who wants to look further.
+
+One more thing checked while here, per a specific follow-up question: does
+`perception.py`'s pickup table recognise Doom's "Computer Area Map"
+power-up (reveals the whole level's map for the rest of that level, which
+would be a legitimate assist if the agent ever walks over one)? Its
+common actor/class name across Doom-engine ports is `Allmap` — searched
+for that string (and `AreaMap`/`ComputerMap`) across the installed
+`vizdoom` package's bundled files and found no occurrence, so it wasn't
+added to `_PICKUP_KINDS` speculatively. If it exists in Freedoom2's MAP01
+under a different label name, `perception.py`'s existing fallback (any
+unmatched `Items`/`Powerups`-category label gets a snake-cased token
+instead of being silently dropped — see `kind_of()`) means it would still
+show up in the world-state text under its raw class name, just not
+recognised by its intended English name; not independently verified with
+a real pickup of one in this session.
+
+### Frontier-directed exploration (`FrontierExplorationConfig`)
+
+`laya_doom/wayfinding.py` uses the verified `ANGLE` convention plus the
+player's `(x, y)` and the existing visited-cells grid
+(`StateEncoder._visited_cells`, now exposed as a public `visited_cells`
+property) to compute, for a handful of candidate headings around the
+current one, which one leads to a cell the encoder hasn't marked visited
+yet — `best_exploration_heading()` — and converts that into a concrete
+`turn_left`/`turn_right`/`move_forward` action —
+`turn_action_for_heading()`. `ExplorationNudgeConfig`'s override (the
+circling detector — unchanged trigger logic) now calls this instead of
+the old blind "pick whichever open side, or alternate by step parity"
+guess, falling back to that only when wayfinding has no visited-cell
+information to work from. This is a real, directed guess at "which way is
+unexplored", grounded in ground-truth position data the pipeline already
+tracks — not a guarantee (the projected cell could be on the far side of
+a wall this pipeline has no way of knowing about), same "nudge, not a
+guarantee" caveat as every other safety net here. `--no-frontier-exploration`
+reverts to the old blind guess.
+
+### Secret search and wall-following: an escalation ladder, not a bigger hammer
+
+A plain frontier nudge alone doesn't reliably converge in a small, fully
+toured room: `best_exploration_heading`'s own fallback (aim at the
+nearest grid cell not yet marked visited, searched out to a 20-cell
+radius) has no idea a wall might be blocking the way, so it can keep
+proposing "go there" forever without any signal that nudging isn't
+actually working. This project's own `docs/doom-strategy-research.md`
+independently describes exactly this shape of problem and exactly this
+fix, cited here rather than invented from scratch:
+
+> "select nearest unvisited frontier. IF no frontiers: inspect
+> lifts/platforms and inaccessible visible objects; scan anomalous/
+> misaligned walls in dead ends... IF same edge sequence repeats twice
+> without: new area, new key, new switch, new geometry, strategically
+> relevant pickup: mark sequence NONPRODUCTIVE" (lines 445–460), and
+> "Secret-like wall suspected but ordinary progression frontiers remain →
+> prioritize normal progression; secrets are usually optional" (R77) —
+> matched by `docs/tiny-doom-runtime-policy-200-rules.md` rules 157/160/
+> 163/167 (prefer an unexplored branch; no progress → choose a different
+> frontier; still stuck → explore unvisited branches; secrets are
+> secondary to normal progression).
+
+`ExplorationNudgeConfig`'s override now tracks `nudge_without_new_area` —
+how many nudges in a row produced no genuinely new visited cell (reset
+the moment one does) — and escalates through two tiers, each ranked
+above plain nudging but only engaging once nudging has demonstrably
+stopped working, matching the doc's own "twice without new area → mark
+NONPRODUCTIVE" framing (`SecretSearchConfig.escalate_after` defaults to
+exactly **2**, taken directly from that line, not tuned):
+
+1. **`SecretSearchConfig`** — Doom/Freedoom secret doors are visually
+   identical to ordinary walls (no texture/colour cue perception.py could
+   detect even if it sampled screen pixels, which it deliberately
+   doesn't — see perception.py's own docstring), so the only real way to
+   find one is to press `use` against several nearby wall-facing
+   directions, not just whichever wall happens to be faced right now
+   (all `DoorUseConfig` below ever tries). Once escalated, this turns to
+   face each of four headings relative to the heading at trigger time
+   (dead ahead, left, right, behind) and presses `use` at each, before
+   giving up.
+2. **`WallFollowConfig`** — the classic maze "right-hand rule": keep a
+   wall at a fixed relative side and slide along it, turning to hug it at
+   corners, using only perception.py's existing screen-space
+   `open_left`/`open_right`/`open_forward` flags (no `ANGLE`, no visited
+   cells at all). Formally guaranteed to reach a simply-connected maze's
+   exit with zero map memory; real Doom levels aren't pure mazes, but many
+   are close enough (linear branching corridors) for this to be worth
+   trying once nudging *and* a full secret-door sweep have both come up
+   empty. Deliberately distinct from the wall-hugging **bug** below
+   despite the similar name — that was aimless, zero-net-rotation wall
+   contact going nowhere; this is purposeful, directional wall contact
+   (always the same hand, always sliding forward).
+
+Both are real, verified to actually fire in real play, not just unit
+tested in isolation. A real 1,200-step `--scenario level` run
+(`logs/laya_frontier_on.steps.jsonl`) and a real 4,000-step run
+(`logs/laya_level_exit3.steps.jsonl`, see below) both show real
+`secret_search`/`wall_follow` entries in `override_reason`: the
+4,000-step run logged 276 `secret_search`-attributed steps and 810
+`wall_follow`-attributed steps (see the measured-results table below for
+the full breakdown) — these mechanisms engage substantially in real play,
+not just in the unit tests (`tests/test_controller.py`'s
+`test_secret_search_regression_tries_use_around_a_dead_end` and
+`test_wall_follow_regression_engages_after_secret_search_and_nudging_both_fail`
+cover the pure logic with fakes; the numbers above are the real-run
+confirmation). `--no-secret-search`/`--no-wall-follow` disable each independently.
+
+### Real bug: wall-hugging (the literal one the user watched live)
+
+Watching a real `--render` run surfaced the exact behaviour this whole
+section was scoped to fix: the agent survived and explored a lot, then
+spent long stretches "hugging/facing the wall". Diagnosing this needed
+real data, not speculation — `StepRecord.override_reason` was added first
+(ported from the sibling project's own identical fix, for the identical
+reason: `overridden=True` alone couldn't say *which* net fired), then a
+fresh real `--scenario level` episode was run and the logs inspected
+directly. Real finding, `logs/laya_level_diag1.steps.jsonl`, steps
+721–799 (all 79 of them, run only stopped because `--max-steps` ran out):
+
+```
+721 x=272.1 y=240.0 proposed=move_forward final=turn_right_large
+722 x=272.1 y=240.0 proposed=strafe_left  final=turn_left_large
+723 x=272.1 y=240.0 proposed=move_forward final=turn_right_large
+724 x=272.1 y=240.0 proposed=strafe_left  final=turn_left_large
+...  (repeats identically for 79 consecutive steps)
+```
+
+with the encoded state showing `WALL ahead far` and `PATH left`/`PATH
+right` both `open` on the tied steps. Two compounding root causes, both
+real:
+
+1. **`_recovery_turn`'s tie-break oscillated.** When `open_left ==
+   open_right`, the fallback picked a direction by `step % 2` — and
+   since the global step counter's parity flips every single call, it
+   alternated `turn_right_large`/`turn_left_large` every step, netting
+   exactly zero rotation forever. **Fix**: `run_episode` now caches ONE
+   `_recovery_turn` result per stuck event (only cleared on real
+   positional progress) instead of re-deriving — and re-tie-breaking — it
+   on every firing.
+2. **`TurnLoopRecoveryConfig` couldn't rescue it.** It's designed to
+   force a `move_forward` attempt after too many consecutive turns — but
+   its original trigger checked Laya's own *proposed* action for being a
+   turn, and here Laya kept proposing `move_forward`/`strafe_left` (never
+   a turn) every single step, while `StuckRecoveryConfig` overrode every
+   one of those into a turn. Since `StuckRecoveryConfig`'s own condition
+   stayed true indefinitely and was checked first, `TurnLoopRecoveryConfig`
+   never even got a chance, no matter how many turns had actually been
+   *executed*. **Fix**: relaxed its trigger to watch
+   `consecutive_turn_steps` (already tracked against the executed action,
+   not the proposal) and moved it ahead of `StuckRecoveryConfig` in the
+   priority chain, excluding only a live combat/use proposal.
+
+Verified fixed with a fresh real run on the same scenario
+(`logs/laya_level_diag2.steps.jsonl`): the longest `stuck_recovery`-only
+run dropped from 79 steps to exactly **6** (capped by
+`TurnLoopRecoveryConfig`'s own `max_consecutive_turns=6`), and — the part
+that actually matters — that 6-step run is now `['turn_right_large'] * 6`,
+a single consistent direction, not an oscillation. A regression test
+(`test_wall_hugging_regression_escapes_a_symmetric_stuck_corner`)
+reproduces the exact tied-open-sides geometry with fakes and asserts the
+fix actually escapes it, not just that the code runs.
+
+### Real bug: `use` never fires at all (before `DoorUseConfig`)
+
+Before building anything for it, checked with real logged data whether
+`use` was ever actually being chosen, the same way the shoot-gate section
+above checked `shoot`: across a real 2,980-step `--scenario level` run
+(`logs/laya_level_full.steps.jsonl`), `use`'s own probability inside
+Laya's returned distribution never exceeded **0.169** (mean **0.071**,
+2,950 real decisions where it was scored) and was picked as the final
+action **0 times**, no matter how close the player was to a wall — the
+same class of bug the shoot gate fixed for `attack`, now for `use`. No
+`noul`-style gate was built for it (there's no game variable exposing
+"is there a real door/switch here" to calibrate one against, unlike the
+`should_shoot` case); instead `DoorUseConfig` fires `use` deterministically
+once `WALL ahead near` has held for `stall_threshold` (default 3)
+consecutive steps — a real no-op against a plain wall in Doom, so a low
+false-positive cost — ranked just above `StuckRecoveryConfig` (try the
+door before turning away from it). Verified actually firing in real play:
+a real 1,200-step run logged 16 real `use` actions, every one of them
+attributed to `door_use` in `override_reason` (Laya itself still never
+chose `use` on its own in that run either) — the same 0-in-isolation
+finding still held even with the fix layered on top, confirming the fix
+is doing real work rather than papering over a problem that had already
+gone away.
+
+### Real bug: `use`/`wait` spam (a second and third stall pattern StuckRecoveryConfig missed)
+
+Validating the work above meant running much longer episodes (3,000–4,000
+steps) than anything tried earlier in this project, and that surfaced two
+more real, previously-invisible bugs — both the same underlying shape:
+Laya proposing the identical non-move action forever once the encoded
+state hit a fixed point, with nothing watching for it because
+`attack`/`shoot`/`use`/`wait` are all deliberately "never second-guess a
+live decision" everywhere else in this module.
+
+- **`use` spam**: a 3,000-step run (`logs/laya_level_exit1.steps.jsonl`)
+  logged **2,339/3,000 (78%)** real `use` decisions, frozen at one
+  position, with a real `PICKUP` visible the whole time (which is exactly
+  why `ExplorationNudgeConfig` correctly never engaged — something
+  legitimate to react to — but nothing else was watching either).
+- **`wait` spam**: a separate 4,000-step run
+  (`logs/laya_level_exit2.steps.jsonl`) logged **3,919/4,000 (98%)** real
+  `wait` decisions. The real logged reasoning at that frozen spot:
+  `wait:0.396` vs. the next-highest `turn_left_small:0.141` — `wait` won
+  comfortably and stayed the top label every single call, since nothing
+  in the encoded state ever changed to shift it.
+
+**Fix**: `StuckRecoveryConfig`'s stall detection (`_STALL_ACTION_NAMES`,
+which already fed `no_progress_steps` and its own trigger condition) now
+also counts a stalled `use` or `wait`, not just a stalled move — after
+enough consecutive no-progress attempts at any of them, it forces the
+same recovery turn a stalled move gets. Verified with a fresh real run,
+same seed as the `wait`-spam run
+(`logs/laya_level_exit3.steps.jsonl`): **0** `wait` actions anywhere in
+4,000 real decisions (down from 3,919), and a second run without a fixed
+seed (`logs/laya_level_exit4.steps.jsonl`) likewise shows **0** `wait`
+actions across 4,000 steps. Two regression tests
+(`test_use_spam_regression_...`/`test_wait_spam_regression_...`)
+reproduce both exact shapes with fakes.
+
+### Real measured results: before vs. after this section's work
+
+Same machine, same `--scenario level`, `--action-set full`. "Before" is
+this session's diagnostic run with `override_reason` logging added but
+before the wall-hugging/frontier/secret-search/wall-follow/stall fixes;
+"after" is the final state, same seed where noted:
+
+| Run | Steps | Distance | Kills | Items | Died | `completed` | Notable |
+|---|---|---|---|---|---|---|---|
+| `laya_level_diag1` (before) | 800 | 7,135 | 2 | 2 | No | False | 79-step wall-hugging freeze found here |
+| `laya_level_diag2` (after wall-hugging fix) | 800 | — | 2 | — | No | False | longest stuck_recovery run: 79 → 6 steps |
+| `laya_level_exit1`, seed 42 (before use/wait-spam fix) | 3,000 | 6,732 | 2 | 4 | No | False | 2,339/3,000 steps were `use` spam |
+| `laya_level_exit2`, seed 42 (before wait-spam fix) | 4,000 | 1,013 | 0 | 0 | No | False | 3,919/4,000 steps were `wait` spam |
+| `laya_level_exit3`, seed 42 (after all fixes) | 2,898 | **22,391** | 9 | 10 | **Yes** (overwhelmed while retreating) | False | 0 `wait`/no long freeze; wall_follow fired 240×, secret_search 68× |
+| `laya_level_exit4`, no seed (after all fixes) | 4,000 (full budget) | **34,261** | 7 | 12 | No | False | wall_follow fired 810×, secret_search 276×; 64 distinct visited cells |
+
+Real, substantial, measured improvement over both this session's own
+earlier diagnostic runs and the original pre-session README numbers (a
+674-step episode that died at 10,121 distance — see "Verified behaviour"
+in the sibling section above): longer survival, far more distance
+covered, more kills and items, and the specific pathological freezes this
+section set out to fix are gone from real logged data, not just
+theoretically addressed.
+
+**Honest limitation, not hidden**: raw distance travelled is not the same
+as exploration coverage, and the `exit4` numbers make that concrete —
+despite covering *more* raw distance than `exit3` (34,261 vs. 22,391),
+`exit4` visited *fewer* distinct 128-unit grid cells (64 vs. 83). With
+`wall_follow` firing 810 times in that run (20% of all 4,000 steps), a
+real chunk of that distance is plausibly sliding back and forth along
+already-known wall segments rather than reaching new ground — a genuine
+trade-off of the escalation ladder, not something this README is
+glossing over.
+
+### Did a real run ever reach `completed=True`?
+
+**No — not in any run tried this session**, including the two final
+4,000-step runs above with every mechanism from this section engaged.
+`completed` for `--scenario level` is `map_exit_reward >= 1` (see
+`run_episode`'s own comment on `completed_by_exit_reward`) — a real,
+ground-truth ViZDoom signal, not an inferred proxy, so this isn't a
+measurement gap; the agent genuinely never reached MAP01's exit in any of
+these episodes, despite substantial real exploration (up to 34,261
+distance units, 64–83 distinct grid cells, multiple real secret-door
+sweeps and wall-following excursions). Reported plainly rather than
+reframed as a partial win: exploration coverage and survival improved
+measurably and are backed by real before/after data above, but the actual
+success bar this section was given — get a real, honest exit — was not
+met. Plausible reasons, none independently confirmed: MAP01
+(`Hydroelectric Plant`) may be large/branching enough that 4,000 decision
+steps (at 3–6 tics each) still isn't enough real playtime to reach a
+distant exit; the wall-following/secret-search ladder, while real and
+firing often, spends a meaningful fraction of the budget on searches and
+corner-following rather than pure forward progress (see the coverage
+caveat above); and `--decision-tics`/`--max-steps` were not swept as part
+of this work, which would be the next thing to try before concluding the
+mechanism itself is insufficient.
+
 ## Laya vs Needle
 
 Real, measured numbers from both projects on this same machine — not
@@ -624,6 +1025,15 @@ All exposed as CLI flags on `experiments/run.py` and `experiments/compare.py`:
 | `--no-stuck-recovery` / `--no-threat-response` | Same two controller-level safety nets, ported unchanged from `controller.py` — see that module for what each does. |
 | `--no-shoot-gate` | Use the original single-`choice`-call design (combat competes directly against move/turn) instead of the default `noul` shoot gate + `AMMO>0`/bearing guards — see [The real fix](#the-real-fix-pull-combat-out-into-its-own-noul-question). Mainly useful for regression/comparison runs against the pre-fix behaviour. |
 | `--shoot-gate-threshold F` | `P(should_shoot)` cutoff for the gate (default **0.45**) — picked directly from a real 8-state spread (see the shoot-gate section), not a calibrated cutoff against a held-out set. |
+| `--no-turn-loop-recovery` | Disable the safety net that forces a `move_forward` attempt after too many consecutive *executed* turns (`controller.TurnLoopRecoveryConfig`) — found on a real `--scenario level` run stuck turning in a corner; later broadened to fix the real wall-hugging bug (see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs)). |
+| `--no-threat-engagement` | Disable the safety net that turns toward a visible, near-enough, off-center enemy instead of letting Laya's movement choice stand (`controller.ThreatEngagementConfig`) — found on a real run that died to a zombieman it never turned to face. |
+| `--no-low-health-retreat` / `--low-health-threshold N` / `--emergency-health-threshold N` | Disable/tune the safety net that retreats (or, below the emergency threshold, overrides even an attack) when a visible enemy is present and health is low (`controller.LowHealthRetreatConfig`) — ported from the sibling Needle project. |
+| `--no-exploration-nudge` / `--exploration-streak-threshold N` | Disable/tune the circling detector (`controller.ExplorationNudgeConfig`) — see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs) for how its override action changed from a blind guess to directed frontier-seeking. |
+| `--no-frontier-exploration` / `--frontier-lookahead-cells F` | Revert ExplorationNudgeConfig's override to the old blind guess, or tune how many grid cells ahead each candidate heading is projected (`controller.FrontierExplorationConfig`) — see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs). |
+| `--no-door-use` / `--door-use-stall-threshold N` | Disable/tune the safety net that tries `use` once after `WALL ahead near` holds for N consecutive steps (`controller.DoorUseConfig`) — added after real logged data showed `use` never wins Laya's movement choice on its own (max probability 0.169 over 2,950 real decisions, 0 times chosen). |
+| `--no-secret-search` | Disable the systematic turn-and-use sequence that engages once frontier exploration has stopped finding new territory (`controller.SecretSearchConfig`) — see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs). |
+| `--no-wall-follow` / `--wall-follow-hand {left,right}` | Disable/pick the hand for the classic maze wall-following fallback (`controller.WallFollowConfig`) — engages once plain nudging *and* a full secret-door sweep have both come up empty; see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs). |
+| `--window-scale {1,2,3}` | Doom window size with `--render`: 1=320×240, 2=640×480 (exact 2×), 3=1024×768 (closest 4:3 preset to 3× — ViZDoom has no exact 3×). Purely a display size; perception.py samples by fraction of width/height, so behaviour is unaffected — ported from the sibling Needle project. |
 
 ## Why there's no system prompt
 
@@ -652,14 +1062,20 @@ API call, just this wrapper's own per-episode state.
 ## Testing
 
 ```bash
-pytest              # 78 tests, pure logic — no vizdoom process needed, and
+pytest              # 140 tests, pure logic — no vizdoom process needed, and
                      # no real Laya model loaded (LayaAgent's own tests fake
                      # out laya.load() to test its label->action mapping,
                      # the shoot gate's AMMO/bearing guards, confidence
                      # gating, and Decision field population in isolation —
-                     # see tests/test_laya_agent.py — plus scripts/probe_criteria.py
-                     # for the real-model wording/gate experiments, not part
-                     # of the automated suite)
+                     # see tests/test_laya_agent.py; tests/test_wayfinding.py
+                     # covers the ANGLE-based heading/turn-choice pure logic;
+                     # tests/test_controller.py includes regression tests that
+                     # reproduce the real wall-hugging/use-spam/wait-spam bugs
+                     # and secret-search/wall-follow escalation with fakes —
+                     # plus scripts/probe_criteria.py, scripts/verify_angle.py,
+                     # scripts/verify_angle_movement.py and
+                     # scripts/probe_automap.py for the real-model/real-ViZDoom
+                     # experiments, not part of the automated suite)
 ```
 
 ## Project structure
@@ -675,6 +1091,7 @@ laya-doom/
         state_encoder.py      Perception -> compact text, 3 memory modes
         laya_agent.py          laya.Agent wrapper, predict()-based, no tool schema
         actions.py             semantic action vocabulary <-> button tables
+        wayfinding.py            verified-ANGLE frontier/heading helpers (Stage 4/5)
         controller.py          the explicit per-tic run_episode() loop
         metrics.py              JSONL logging + summary stats
         dashboard.py             live terminal view
@@ -684,8 +1101,12 @@ laya-doom/
         compare.py               multi-controller comparison CLI
     scripts/
         setup.sh                 automated venv + install
+        probe_criteria.py        real-model criteria-wording/shoot-gate probes
+        verify_angle.py,         real ANGLE sign-convention verification
+        verify_angle_movement.py (see Stage 4/5)
+        probe_automap.py         real automap-buffer capture + analysis
     tests/                  actions/perception/state_encoder/metrics/controller/
-                             heuristic_agent/laya_agent unit tests
+                             heuristic_agent/laya_agent/wayfinding unit tests
     logs/                   JSONL output (gitignored)
 ```
 
@@ -717,18 +1138,30 @@ Built:
 
 - **Stage 1** (four-action proof of concept, `basic` scenario) — working
   end to end, including the shoot-gate fix, see Verified behaviour above.
+- **Stage 2/3** (`my_way_home` navigation, and a real Freedoom level via
+  `--scenario level` with the `full` action set) — extensively run this
+  session (multiple real episodes from 674 up to 4,000 steps), covered in
+  detail by the safety nets in `controller.py` and the
+  [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs)
+  section above.
+- **Stage 4/5, partially** (real wayfinding, exit-seeking) — ViZDoom's
+  `ANGLE` convention verified empirically and used for real
+  frontier-directed exploration; the automap buffer investigated and
+  honestly rejected; a systematic secret-door search and a classic
+  wall-following fallback built and verified firing in real play; three
+  more real bugs found on long real runs and fixed. **Not** achieved:
+  `completed=True` was never observed in any real run this session — see
+  that section's own honest conclusion for exactly what was tried and
+  what's still missing. The two Doom strategy documents this project's
+  folder already had (`docs/doom-strategy-research.md`,
+  `docs/tiny-doom-runtime-policy-200-rules.md`) turned out to directly
+  describe the same frontier→secret-search escalation shape built here
+  (cited directly in that section, not just sitting unused as this
+  Roadmap previously said) — a genuinely useful starting point for a
+  future hierarchical agent, which this project still doesn't attempt.
 
-Not built (all ported over structurally from the sibling project's
-decision-agnostic pieces, so nothing below needs new perception/encoding
-work — only running it and reporting what happens):
+Not built:
 
-- **Stage 2 (`my_way_home` navigation)** and **Stage 3 (a real Freedoom
-  level, `--scenario level`)** — both scenarios and the `full` action set
-  are wired and covered by the ported tests, but not yet run against the
-  real Laya checkpoint for this README. Now that combat actually works on
-  `basic`, this is worth checking rather than assuming it inherits the
-  same fix — `full`'s `attack` and `move_backward` weren't part of the
-  crowding-analogy test that gave the opposite-of-Needle result above.
 - **Fine-tuning Laya for this task** — the project explicitly supports
   this (a T4-GPU Colab notebook for fine-tuning on custom data); doing so
   would be training a model for Doom-playing specifically, which is
@@ -739,18 +1172,17 @@ work — only running it and reporting what happens):
 - **`score` question type** — only `choice` and (as of the shoot-gate fix)
   `noul` were used here; Laya's third typed-question primitive wasn't
   explored for this task.
-- **A richer threat/priority model** — two full-game Doom strategy
-  documents (`deep-research-report (4).md`, a detailed AI Doom playbook
-  covering enemy-specific tactics, weapon selection, infighting, and
-  navigation memory; `tiny-doom-runtime-policy-200-rules.md`, a compressed
-  200-rule version of the same) were dropped into this project folder —
-  not used to build anything here, since they assume a much richer game
-  state (per-ammo-type tracking, enemy taxonomy beyond bearing/distance,
-  navigation memory, weapon selection) than this Stage 1 proof of concept
-  implements. They're a plausible starting point for Stage 4/5 (a
-  hierarchical agent issuing higher-level goals/skills, per both
-  projects' own roadmaps) rather than something this project's current
-  scope calls for.
+- **A hierarchical agent with real per-ammo-type/enemy-taxonomy/navigation-
+  memory state** — the two strategy documents above assume a materially
+  richer game state than this project's `Perception`/world-state text
+  implements (they were used to *design* the escalation ladder's ordering
+  and thresholds, not to add that richer state itself); building that
+  state and a higher-level goal/skill layer on top of it remains unbuilt.
+- **Sweeping `--decision-tics`/`--max-steps` specifically to chase
+  `completed=True`** — flagged as the most likely next lever in the
+  Stage 4/5 section's own honest conclusion, not attempted this session
+  to avoid exactly the kind of "kept tuning knobs until a number looked
+  good" pattern this project's methodology avoids elsewhere.
 - **Browser dashboard, multi-agent, multi-map progression** — same
   unbuilt items as the sibling project's own roadmap, for the same reasons.
 
@@ -787,3 +1219,26 @@ work — only running it and reporting what happens):
   a `turn` lines it up to exactly `front`), which is what fixed the real
   0-damage bug but is also a real behavioural constraint worth knowing
   about, not just a bug fix with no trade-off.
+- The real wall-hugging bug's own logged data (see
+  [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs))
+  showed `WALL ahead far` — not `near` — at a position where the player
+  was completely, persistently stuck. `wall_ahead`/`wall_near` come from a
+  3-ray depth scan (forward/left/right at fixed screen fractions, one row)
+  that can under-detect nearby blocking geometry outside those exact rays
+  (a thin pillar, an off-axis corner) — consistent with perception.py's
+  own docstring calling the depth-scan calibration "approximate...meant to
+  be re-tuned by eye", not something this session re-derived or fixed.
+  `DoorUseConfig` only triggers on `wall_near`, so it correctly never
+  fired at this particular spot; the fix that mattered there was
+  StuckRecoveryConfig/TurnLoopRecoveryConfig's own turn-direction logic,
+  independent of this quirk.
+- ViZDoom's automap buffer background fill colour is the same for
+  revealed and undiscovered regions (see the automap investigation above)
+  — a naive "count black pixels" heuristic for "how much is unexplored"
+  does not work on this buffer, and this wasn't obvious without actually
+  capturing and looking at real images.
+- `WallFollowConfig` inflates raw distance-travelled without a
+  proportional increase in exploration coverage (see the measured-results
+  table above: `exit4` covered more distance than `exit3` but fewer
+  distinct grid cells) — a real trade-off of the escalation ladder, not
+  a free improvement.

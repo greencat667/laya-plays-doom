@@ -11,8 +11,20 @@ from __future__ import annotations
 import argparse
 import sys
 
-from laya_doom.controller import StuckRecoveryConfig, ThreatResponseConfig, run_episode
-from laya_doom.doom_env import DoomEnv, DoomEnvConfig
+from laya_doom.controller import (
+    DoorUseConfig,
+    ExplorationNudgeConfig,
+    FrontierExplorationConfig,
+    LowHealthRetreatConfig,
+    SecretSearchConfig,
+    StuckRecoveryConfig,
+    ThreatEngagementConfig,
+    ThreatResponseConfig,
+    TurnLoopRecoveryConfig,
+    WallFollowConfig,
+    run_episode,
+)
+from laya_doom.doom_env import WINDOW_SCALE_RESOLUTIONS, DoomEnv, DoomEnvConfig
 from laya_doom.metrics import MetricsLogger, load_jsonl, summarize_episodes
 from laya_doom.perception import PerceptionConfig
 from laya_doom.state_encoder import EncoderConfig, StateEncoder
@@ -121,7 +133,104 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="disable the safety net that forces a turn after taking damage from an unseen attacker (see controller.ThreatResponseConfig)",
     )
+    p.add_argument(
+        "--no-turn-loop-recovery",
+        action="store_true",
+        help="disable the safety net that forces a move_forward attempt after too many consecutive turn "
+        "actions with no move ever proposed (see controller.TurnLoopRecoveryConfig) — found on a real "
+        "--scenario level run that got stuck turning in a corner even after a path opened up",
+    )
+    p.add_argument(
+        "--no-threat-engagement",
+        action="store_true",
+        help="disable the safety net that turns toward a visible, near-enough, off-center enemy instead of "
+        "letting Laya's movement choice stand (see controller.ThreatEngagementConfig) — found on a real "
+        "--scenario level run that died to one zombieman it never turned to face",
+    )
+    p.add_argument(
+        "--no-low-health-retreat",
+        action="store_true",
+        help="disable the safety net that retreats when a visible enemy is present and health is low (see "
+        "controller.LowHealthRetreatConfig) — ported from the sibling Needle project",
+    )
+    p.add_argument(
+        "--low-health-threshold",
+        type=int,
+        default=20,
+        help="health at or below which low-health-retreat kicks in with a visible enemy, unless Laya already chose attack/shoot (default 20)",
+    )
+    p.add_argument(
+        "--emergency-health-threshold",
+        type=int,
+        default=10,
+        help="health at or below which low-health-retreat overrides even an attack/shoot decision (default 10)",
+    )
+    p.add_argument(
+        "--no-exploration-nudge",
+        action="store_true",
+        help="disable the circling-breaker safety net (see controller.ExplorationNudgeConfig) — a first pass "
+        "at exit-seeking, not real wayfinding — ported from the sibling Needle project",
+    )
+    p.add_argument(
+        "--exploration-streak-threshold",
+        type=int,
+        default=15,
+        help="consecutive already-visited-cell decisions (with no enemy/pickup) before exploration-nudge forces a heading change (default 15)",
+    )
+    p.add_argument(
+        "--no-frontier-exploration",
+        action="store_true",
+        help="make exploration-nudge's forced heading change blind again (the old open_left/open_right/alternate "
+        "guess) instead of the default directed guess toward the nearest known-unvisited grid cell, computed "
+        "from the now-verified ANGLE game variable (see controller.FrontierExplorationConfig / wayfinding.py "
+        "and the README's ANGLE-verification section) — for regression/comparison",
+    )
+    p.add_argument(
+        "--frontier-lookahead-cells",
+        type=float,
+        default=2.0,
+        help="how many area_cell_size-unit cells ahead each candidate heading is projected when picking a "
+        "directed exploration-nudge turn (default 2.0)",
+    )
+    p.add_argument(
+        "--no-door-use",
+        action="store_true",
+        help="disable the safety net that tries `use` once after WALL ahead near holds for --door-use-stall-"
+        "threshold consecutive steps (see controller.DoorUseConfig) — added after real logged data showed "
+        "`use` never wins Laya's crowded movement choice (max probability 0.169 over 2,950 real decisions, "
+        "0 times chosen) no matter how close to a wall/door",
+    )
+    p.add_argument(
+        "--door-use-stall-threshold",
+        type=int,
+        default=3,
+        help="consecutive WALL-ahead-near steps before door-use tries `use` once (default 3)",
+    )
+    p.add_argument(
+        "--no-secret-search",
+        action="store_true",
+        help="disable the systematic turn-and-use sequence that runs once frontier exploration is exhausted "
+        "(no reachable unvisited territory nearby) — see controller.SecretSearchConfig. Doom/Freedoom secret "
+        "doors look identical to ordinary walls, so this tries `use` against several nearby wall-facing "
+        "directions instead of only whichever single wall is currently faced",
+    )
+    p.add_argument(
+        "--no-wall-follow",
+        action="store_true",
+        help="disable the classic right/left-hand wall-following maze fallback that engages once plain "
+        "nudging and a full secret-door sweep have both come up empty (see controller.WallFollowConfig)",
+    )
+    p.add_argument("--wall-follow-hand", choices=["left", "right"], default="right")
     p.add_argument("--render", action="store_true", help="open a visible Doom window")
+    p.add_argument(
+        "--window-scale",
+        type=int,
+        choices=[1, 2, 3],
+        default=1,
+        help="Doom window size with --render: 1=320x240, 2=640x480 (exact 2x), 3=1024x768 (closest 4:3 preset "
+        "to 3x — ViZDoom has no exact 3x). Purely a display size; perception.py samples by fraction of "
+        "width/height, so behavior is unaffected — ported from the sibling Needle project.",
+    )
     p.add_argument("--dashboard", action="store_true", help="show the live terminal dashboard")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--log-dir", default="logs")
@@ -149,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             uniform_tics=args.decision_tics,
             seed=args.seed,
             doom_map=args.doom_map,
+            screen_resolution=WINDOW_SCALE_RESOLUTIONS[args.window_scale],
         )
     )
     agent = _build_agent(args)
@@ -162,6 +272,22 @@ def main(argv: list[str] | None = None) -> int:
     perception_config = PerceptionConfig()
     stuck_recovery = StuckRecoveryConfig(enabled=not args.no_stuck_recovery)
     threat_response = ThreatResponseConfig(enabled=not args.no_threat_response)
+    turn_loop_recovery = TurnLoopRecoveryConfig(enabled=not args.no_turn_loop_recovery)
+    threat_engagement = ThreatEngagementConfig(enabled=not args.no_threat_engagement)
+    low_health_retreat = LowHealthRetreatConfig(
+        enabled=not args.no_low_health_retreat,
+        health_threshold=args.low_health_threshold,
+        emergency_health_threshold=args.emergency_health_threshold,
+    )
+    exploration_nudge = ExplorationNudgeConfig(
+        enabled=not args.no_exploration_nudge, streak_threshold=args.exploration_streak_threshold
+    )
+    frontier_exploration = FrontierExplorationConfig(
+        enabled=not args.no_frontier_exploration, lookahead_cells=args.frontier_lookahead_cells
+    )
+    door_use = DoorUseConfig(enabled=not args.no_door_use, stall_threshold=args.door_use_stall_threshold)
+    secret_search = SecretSearchConfig(enabled=not args.no_secret_search)
+    wall_follow = WallFollowConfig(enabled=not args.no_wall_follow, hand=args.wall_follow_hand)
 
     dashboard = None
     if args.dashboard:
@@ -191,6 +317,14 @@ def main(argv: list[str] | None = None) -> int:
                 on_step=on_step,
                 stuck_recovery=stuck_recovery,
                 threat_response=threat_response,
+                turn_loop_recovery=turn_loop_recovery,
+                threat_engagement=threat_engagement,
+                low_health_retreat=low_health_retreat,
+                exploration_nudge=exploration_nudge,
+                door_use=door_use,
+                frontier_exploration=frontier_exploration,
+                secret_search=secret_search,
+                wall_follow=wall_follow,
             )
             logger.log_episode(result)
             if dashboard is not None:

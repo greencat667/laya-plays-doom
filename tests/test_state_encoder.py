@@ -106,12 +106,15 @@ def test_area_hint_new_then_revisited():
 
     first = encoder.encode(here, None, None, None)
     assert "AREA new" in first
+    assert encoder.last_area_new is True
 
     second = encoder.encode(here, None, None, None)
     assert "AREA revisited" in second
+    assert encoder.last_area_new is False
 
     third = encoder.encode(elsewhere, None, None, None)
     assert "AREA new" in third
+    assert encoder.last_area_new is True
 
 
 def test_area_hint_toggle_and_reset():
@@ -123,7 +126,20 @@ def test_area_hint_toggle_and_reset():
     perc = make_perception()
     encoder.encode(perc, None, None, None)
     encoder.reset()
+    assert encoder.last_area_new is None
     assert "AREA revisited" not in encoder.encode(perc, None, None, None)
+
+
+def test_last_area_new_none_before_first_encode_or_when_disabled():
+    # Exposed for controller.py's ExplorationNudgeConfig (a circling
+    # detector, ported from the sibling Needle project) to read directly
+    # rather than re-deriving it by parsing the encoded text.
+    encoder = StateEncoder(EncoderConfig(include_goal_line=False))
+    assert encoder.last_area_new is None
+
+    disabled = StateEncoder(EncoderConfig(include_goal_line=False, include_area_hint=False))
+    disabled.encode(make_perception(), None, None, None)
+    assert disabled.last_area_new is None
 
 
 def test_keys_hint_omitted_when_empty():

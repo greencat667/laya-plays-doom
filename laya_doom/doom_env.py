@@ -31,6 +31,20 @@ FREEDOOM2_PATH = os.path.join(os.path.dirname(vzd.__file__), "freedoom2.wad")
 LEVEL_SCENARIO = "level"
 DEFAULT_LEVEL_MAP = "MAP01"
 
+# Ported from the sibling Needle project's --window-scale (same rationale,
+# same numbers): perception.py samples the depth/labels buffers by
+# *fraction* of width/height, not fixed pixel offsets, so window size is
+# purely a "how big is the window to watch" knob — verified there that
+# perceive() runs correctly at 1024x768, real movement/health tracked
+# fine. No exact 3x of the base 320x240 exists in vzd.ScreenResolution
+# (checked the enum directly) — RES_1024X768 is the closest 4:3-preserving
+# preset, at ~3.2x.
+WINDOW_SCALE_RESOLUTIONS: dict[int, vzd.ScreenResolution] = {
+    1: vzd.ScreenResolution.RES_320X240,
+    2: vzd.ScreenResolution.RES_640X480,  # exact 2x
+    3: vzd.ScreenResolution.RES_1024X768,  # closest 4:3 preset to 3x (~3.2x)
+}
+
 
 @dataclass
 class DoomEnvConfig:
@@ -41,6 +55,18 @@ class DoomEnvConfig:
     seed: int | None = None
     doom_map: str | None = None
     screen_resolution: vzd.ScreenResolution = vzd.ScreenResolution.RES_320X240
+    # Off by default — see scripts/probe_automap.py and the README's
+    # "Automap buffer investigation" section for why: real captures showed
+    # it only draws wall-line geometry the player has already been near
+    # (background fill color is identical for revealed and undiscovered
+    # regions — it's not a simple "black = unexplored" mask), and it added
+    # no signal beyond the verified-ANGLE frontier approach above for the
+    # cost of an extra rendered buffer every tic. Kept as a config knob
+    # (not hardcoded False in _configure) so the probe script can still
+    # exercise it through the same DoomEnv real runs use, without a
+    # second hand-built vzd.DoomGame.
+    automap_buffer_enabled: bool = False
+    automap_mode: "vzd.AutomapMode | None" = None
 
 
 class DoomEnv:
@@ -74,7 +100,9 @@ class DoomEnv:
         game.set_screen_format(vzd.ScreenFormat.RGB24)
         game.set_depth_buffer_enabled(True)
         game.set_labels_buffer_enabled(True)
-        game.set_automap_buffer_enabled(False)
+        game.set_automap_buffer_enabled(self.config.automap_buffer_enabled)
+        if self.config.automap_buffer_enabled and self.config.automap_mode is not None:
+            game.set_automap_mode(self.config.automap_mode)
         game.set_audio_buffer_enabled(False)
         game.set_objects_info_enabled(False)
         game.set_sectors_info_enabled(False)
