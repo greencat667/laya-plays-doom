@@ -1,0 +1,5 @@
+vizdoom>=1.2.4
+laya>=0.1.6
+numpy>=1.26
+rich>=13.7
+pytest>=8.0

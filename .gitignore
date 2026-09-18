@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+logs/*.jsonl
+models/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.DS_Store
+_vizdoom.ini
+
+# Hugging Face model cache, if HF_HOME/TRANSFORMERS_CACHE ever points inside
+# this project directory instead of the default ~/.cache/huggingface.
+.cache/
+huggingface_cache/
