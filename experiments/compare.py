@@ -53,6 +53,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--confidence-threshold", type=float, default=0.15)
     p.add_argument("--model-id", default="convaiinnovations/laya")
     p.add_argument("--device", default=None)
+    p.add_argument(
+        "--no-shoot-gate",
+        action="store_true",
+        help="see experiments/run.py --no-shoot-gate — applies to the laya controller only",
+    )
+    p.add_argument("--shoot-gate-threshold", type=float, default=0.45)
     p.add_argument("--max-steps", type=int, default=500)
     p.add_argument(
         "--no-stuck-recovery",
@@ -97,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             confidence_mode=args.confidence_mode,
             confidence_threshold=args.confidence_threshold,
+            no_shoot_gate=args.no_shoot_gate,
+            shoot_gate_threshold=args.shoot_gate_threshold,
         )
         agent = _build_agent(agent_args)
         encoder = StateEncoder(EncoderConfig(memory_mode=memory_mode))

@@ -48,6 +48,8 @@ def _build_agent(args: argparse.Namespace):
             device=args.device,
             confidence_mode=args.confidence_mode,
             confidence_threshold=args.confidence_threshold,
+            use_shoot_gate=not args.no_shoot_gate,
+            shoot_gate_threshold=args.shoot_gate_threshold,
         )
     raise ValueError(f"unknown controller: {args.controller}")
 
@@ -92,6 +94,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--device",
         default=None,
         help='torch device for laya.load() — omit to auto-detect (cuda > mps > cpu); this machine auto-detects "mps"',
+    )
+    p.add_argument(
+        "--no-shoot-gate",
+        action="store_true",
+        help="use one `choice` call over every label including combat (the original design) instead of the "
+        "default two-call design (a separate `noul` should_shoot gate + an AMMO>0 guard, then a movement "
+        "choice over the rest) — see laya_agent.py's module-level comment for why the gate is the default: "
+        "shoot/attack never won the multi-way choice on its own (0/8 on hand-built states)",
+    )
+    p.add_argument(
+        "--shoot-gate-threshold",
+        type=float,
+        default=0.45,
+        help="P(should_shoot) cutoff for the shoot gate — picked from a real 8-state spread (see "
+        "laya_agent.py), not a calibrated cutoff; only applies when the gate is enabled",
     )
     p.add_argument("--max-steps", type=int, default=500)
     p.add_argument(
