@@ -84,8 +84,7 @@ Same setup as that earlier pipeline, reused as-is: for `basic`/`my_way_home`
 scenarios, ViZDoom ships its own small scenario WADs and falls back
 automatically to the **Freedoom2** IWAD bundled inside the `vizdoom` pip
 package when `doom2.wad` isn't present. `doom_env.py` never sets
-`doom_game_path` for those. Zero manual asset setup, verified on this
-machine.
+`doom_game_path` for those. Zero manual asset setup required.
 
 ## How the decision engine works
 
@@ -170,8 +169,8 @@ source .venv/bin/activate
 your PATH (fast), otherwise falls back to `python3.11 -m venv` + `pip`. No
 manual Doom asset download is required (see above). The first `laya`
 controller run downloads the `convaiinnovations/laya` checkpoint from
-Hugging Face (~843MB weights; ~190s on this machine's connection, cached
-under `~/.cache/huggingface/hub/` afterward — not inside this repo, so
+Hugging Face (~843MB weights; download time depends on your connection,
+cached under `~/.cache/huggingface/hub/` afterward — not inside this repo, so
 it's not something `.gitignore` needs to cover, though a `.cache/` guard
 is included anyway in case `HF_HOME` is ever pointed here).
 

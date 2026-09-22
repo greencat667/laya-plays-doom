@@ -311,7 +311,7 @@ class WallFollowConfig:
     (``open_left``/``open_right``/``open_forward``) — no ANGLE, no
     visited-cells grid, nothing this mechanism needs FrontierExploration/
     SecretSearch's machinery for. Deliberately distinct from the real
-    "wall-hugging" bug this session found and fixed (StuckRecoveryConfig/
+    "wall-hugging" bug fixed by StuckRecoveryConfig/
     TurnLoopRecoveryConfig's docstrings): that was *aimless* repeated
     facing/bumping with zero net rotation, going nowhere; this is
     *purposeful* wall contact — always the same hand, always sliding

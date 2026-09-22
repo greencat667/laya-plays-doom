@@ -12,7 +12,7 @@ design around. Laya's own top-level API (``dir(laya)`` on the installed
 works around — Laya has no persistent internal state between
 ``predict()`` calls, so there's nothing that could go stale or need
 periodic clearing: each call is an independent forward pass. This was
-verified empirically on this machine, not just inferred from the API
+verified empirically, not just inferred from the API
 shape: 200 consecutive ``predict()`` calls with the byte-identical
 repetitive input showed no latency trend at all (first-half mean
 21.58ms, second-half mean 21.54ms; max single call 25.56ms, no outlier

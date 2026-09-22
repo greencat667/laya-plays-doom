@@ -105,7 +105,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--device",
         default=None,
-        help='torch device for laya.load() — omit to auto-detect (cuda > mps > cpu); this machine auto-detects "mps"',
+        help='torch device for laya.load() — omit to auto-detect (cuda > mps > cpu)',
     )
     p.add_argument(
         "--no-shoot-gate",
