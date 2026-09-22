@@ -11,16 +11,19 @@ set of `choice` labels?
 ViZDoom → perception → compact world-state text → Laya.predict() → choice label → ViZDoom
 ```
 
-This is the sibling experiment to
-[`058 - Needle Plays Doom`](../058%20-%20Needle%20Plays%20Doom/README.md),
-which asked the same question of Cactus Compute's Needle 3, an
-autoregressive tool-calling model. Everything upstream of the decision —
-ViZDoom setup, perception, world-state text encoding, metrics, the
-stuck-recovery/threat-response safety nets — is the same code, ported
-directly from that project. The **only** thing that changes here is the
-decision engine. This project is fully self-contained (own venv, own
-`requirements.txt`, own git repo) and has no dependency on the sibling
-project or on `cactus-needle`.
+This project reuses a Doom-playing pipeline — ViZDoom setup, perception,
+world-state text encoding, metrics, the stuck-recovery/threat-response
+safety nets — that was originally built and validated in a related but
+separate experiment, which asked the same question of Cactus Compute's
+Needle 3, an autoregressive tool-calling model, as the decision engine
+instead of Laya. That earlier project is **not part of this repository**
+and isn't published alongside it, so where this README cites specific
+Needle numbers below (latency, confidence, crowding-fix behaviour), treat
+them as prior/comparative results measured on that other setup, not
+something you can click through and verify here. The **only** thing that
+changes in this repo is the decision engine. This project is fully
+self-contained (own venv, own `requirements.txt`, own git repo) and has
+no dependency on that earlier project or on `cactus-needle`.
 
 **Status: Stage 1 (four-action proof of concept) is built and verified
 running** on Apple Silicon macOS with real ViZDoom + the real
@@ -34,8 +37,8 @@ a real 150-step episode picked `turn_right` on literally every decision,
 including 7 times with an enemy dead ahead. **That's since been fixed**
 (see [The real fix](#the-real-fix-pull-combat-out-into-its-own-noul-question)
 below): pulling combat out into its own `noul` "should_shoot" question —
-one of Laya's own documented primitives, used the way the sibling project
-used Needle's `triggers=` — plus two deterministic guards (`AMMO>0`,
+one of Laya's own documented primitives, used the way the Needle-based
+experiment used Needle's `triggers=` — plus two deterministic guards (`AMMO>0`,
 bearing exactly `front`) checked in code rather than trusted from the
 model, took it from worse-than-random (0 kills/5 episodes) to matching
 the hand-written heuristic baseline: real, verified 10-episode numbers,
@@ -54,7 +57,7 @@ rather than glossed over.
 
 ## Demo
 
-[![Laya plays Doom](https://img.youtube.com/vi/-Vp0UT_nzz8/maxresdefault.jpg)](https://www.youtube.com/watch?v=-Vp0UT_nzz8)
+[![Laya plays Doom](https://img.youtube.com/vi/-Vp0UT_nzz8/0.jpg)](https://www.youtube.com/watch?v=-Vp0UT_nzz8)
 
 ## Architecture
 
@@ -88,8 +91,8 @@ doom_env.py               — DoomEnv.execute(action_name) → game.make_action(
 ViZDoom (repeat)
 ```
 
-`controller.py` is the same explicit per-control-cycle loop as the sibling
-project — one `agent.decide()` call per Doom step, no autonomous loop.
+`controller.py` is the same explicit per-control-cycle loop as that
+earlier pipeline — one `agent.decide()` call per Doom step, no autonomous loop.
 `random_agent.py`, `heuristic_agent.py` and `laya_agent.py` (in
 `experiments/`) all implement the same tiny interface —
 `decide(perception, encoded_state) -> Decision`, `reset()` — and run
@@ -98,7 +101,7 @@ through the *exact same* `perception.py`/`state_encoder.py` pipeline via
 
 ## No commercial Doom files needed
 
-Same setup as the sibling project, reused as-is: for `basic`/`my_way_home`
+Same setup as that earlier pipeline, reused as-is: for `basic`/`my_way_home`
 scenarios, ViZDoom ships its own small scenario WADs and falls back
 automatically to the **Freedoom2** IWAD bundled inside the `vizdoom` pip
 package when `doom2.wad` isn't present. `doom_env.py` never sets
@@ -181,7 +184,7 @@ machine, isolated, nothing else competing for the GPU/CPU.
 
 ### Does Laya need a `reset()` between decisions? Tested, not assumed
 
-The sibling Needle project needed `NeedleAgent.reset()`/`reset_every`
+The related Needle-based experiment needed `NeedleAgent.reset()`/`reset_every`
 specifically because a long streak of autoregressive `complete()` calls
 without resetting could make a *later* decode pathologically slow on
 repetitive input (confirmed there: 38 calls in, 57s+ and still climbing).
@@ -212,7 +215,7 @@ for that. Tested directly against 8 hand-built, characteristic Doom
 world-states (enemy dead ahead near/very-near, enemy off to a side, wall
 ahead, open path with no enemy, no ammo with an enemy ahead, low health
 with a far enemy) using the shipped criteria wording
-(`laya_agent._ACTION_CRITERIA`, adapted from the sibling project's Needle
+(`laya_agent._ACTION_CRITERIA`, adapted from that earlier pipeline's Needle
 tool docstrings):
 
 ```
@@ -238,7 +241,7 @@ guessing near the 5-way-uniform baseline (0.20) for this out-of-domain
 task, not confidently wrong.
 
 **One improvement pass was tried, per this project's own no-repeated-
-tuning rule** — the sibling project's approach was to rewrite Needle's
+tuning rule** — the Needle-based experiment's approach was to rewrite Needle's
 tool triggers/docstrings until behaviour improved; the equivalent lever
 here is criteria wording. A second version
 (`CRITERIA_V2` in the test script, not shipped) made every condition
@@ -293,8 +296,8 @@ next section for the actual fix.
 
 ### The real fix: pull combat out into its own `noul` question
 
-Needle's fix for the equivalent problem (058, "attack was being crowded
-out") was to shrink the competing-tool count, using Needle's own
+Needle's fix for the equivalent problem in that other experiment ("attack
+was being crowded out") was to shrink the competing-tool count, using Needle's own
 `triggers=`/tool-count guidance. That lever doesn't exist for Laya's
 `choice` type, and shrinking the label set didn't reproduce the effect
 here either (see the crowding-analogy test below). But Laya has a
@@ -326,7 +329,7 @@ held-out set) **and** a deterministic `AMMO > 0` check passes — code, not
 the model, since the model doesn't reliably enforce it — the combat
 action fires; otherwise a `choice` call over the remaining movement
 labels decides, with combat no longer competing in it at all. This
-mirrors the sibling project's own pattern of a deterministic safety net
+mirrors that earlier pipeline's own pattern of a deterministic safety net
 layered visibly on top of a model decision (`StuckRecoveryConfig`/
 `ThreatResponseConfig`), not hidden inside it. `--no-shoot-gate` restores
 the single-`choice`-call design for comparison.
@@ -334,7 +337,8 @@ the single-`choice`-call design for comparison.
 The Needle-crowding analogy was also tested directly, since the
 methodology should be checked even where the hypothesis turns out not to
 transfer: the `full` action set's `attack` label, one state (enemy front,
-open path), 11 competing labels vs. a trimmed 5 (mirroring 058's fix):
+open path), 11 competing labels vs. a trimmed 5 (mirroring that other
+experiment's fix):
 
 ```
 11 labels -> attack   conf=0.998  attack_prob=0.999
@@ -436,8 +440,8 @@ reasoning: turn_right:0.529 move_forward:0.188 turn_left:0.187 shoot:0.096 (conf
 ```
 
 `shoot` was the *lowest*-probability option, not a close second. This is
-the same class of finding the sibling README reported for base Needle
-("mostly turned and almost never chose shoot") — the difference is that
+the same class of finding reported for base Needle in the related
+experiment ("mostly turned and almost never chose shoot") — the difference is that
 Needle's fix (`triggers=`/tool-count) doesn't transfer to Laya's `choice`
 mechanism, but Laya's separate `noul` primitive turned out to be an
 equally real, if different, fix — see above.
@@ -519,8 +523,8 @@ until a number looked right.
 
 ## Stage 4/5: real wayfinding, secret search, and three more real bugs
 
-Both this project's own Roadmap and the sibling Needle project's explicitly
-called out the same gap: perception.py deliberately never trusts ViZDoom's
+Both this project's own Roadmap and the related Needle-based experiment's
+explicitly called out the same gap: perception.py deliberately never trusts ViZDoom's
 `ANGLE` sign convention (see its module docstring), so neither project had
 ever built real "which way is unexplored" wayfinding — only a blind
 circling detector (`ExplorationNudgeConfig`). This section closes that gap
@@ -742,7 +746,7 @@ Watching a real `--render` run surfaced the exact behaviour this whole
 section was scoped to fix: the agent survived and explored a lot, then
 spent long stretches "hugging/facing the wall". Diagnosing this needed
 real data, not speculation — `StepRecord.override_reason` was added first
-(ported from the sibling project's own identical fix, for the identical
+(ported from that earlier pipeline's own identical fix, for the identical
 reason: `overridden=True` alone couldn't say *which* net fired), then a
 fresh real `--scenario level` episode was run and the logs inspected
 directly. Real finding, `logs/laya_level_diag1.steps.jsonl`, steps
@@ -867,9 +871,9 @@ before the wall-hugging/frontier/secret-search/wall-follow/stall fixes;
 | `laya_level_exit4`, no seed (after all fixes) | 4,000 (full budget) | **34,261** | 7 | 12 | No | False | wall_follow fired 810×, secret_search 276×; 64 distinct visited cells |
 
 Real, substantial, measured improvement over both this session's own
-earlier diagnostic runs and the original pre-session README numbers (a
-674-step episode that died at 10,121 distance — see "Verified behaviour"
-in the sibling section above): longer survival, far more distance
+earlier diagnostic runs and the prior result reported for the related
+Needle-based experiment (a 674-step episode that died at 10,121 distance,
+per that experiment's own "Verified behaviour" findings): longer survival, far more distance
 covered, more kills and items, and the specific pathological freezes this
 section set out to fix are gone from real logged data, not just
 theoretically addressed.
@@ -911,19 +915,21 @@ mechanism itself is insufficient.
 ## Laya vs Needle
 
 Real, measured numbers from both projects on this same machine — not
-marketing figures from either vendor.
+marketing figures from either vendor. The Needle numbers were measured in
+the related, separate experiment described above (not part of this
+repository); the Laya numbers are from this repository.
 
-| | Needle 3 (058) | Laya (059, this project) |
+| | Needle 3 (related experiment) | Laya (this project) |
 |---|---|---|
 | Mechanism | Autoregressive tool-calling: decode loop produces a structured function call + free-text reasoning | Non-autoregressive: one forward pass over typed `choice`/`score`/`noul` questions, no generation at all |
 | Persistent state between decisions | Yes — internal state that needed periodic `reset()` (`reset_every`, default 15) to avoid a real, confirmed decode stall (38 calls in, 57s+) on repetitive input | None — `laya.Agent` has no `reset()` method; verified empirically here (200 identical calls, no latency trend, see above) rather than just inferred |
 | System/goal-priority injection | No documented `system=` prose mechanism (facts-only); `GOAL` line injected into world-state text instead | No `system`/instructions parameter of any kind on `predict()`; identical `GOAL`-line-in-state-text approach used here for the same reason |
-| Tool/label count constraint | Own guidance: 5 or fewer tools render directly before retrieval filters — 058 found `full`'s original 6 tools crowding out `attack` (0/2257 real decisions) and dropped to exactly 5, which helped (0/10 -> 5/10 on a combined test) | Tested the same crowding hypothesis here (11 labels vs. a trimmed 5, one state): the *opposite* happened — `attack_prob` dropped from 0.999 to 0.213 with fewer labels. No equivalent mechanism transfers; see [The real fix](#the-real-fix-pull-combat-out-into-its-own-noul-question) |
+| Tool/label count constraint | Own guidance: 5 or fewer tools render directly before retrieval filters — the related experiment found `full`'s original 6 tools crowding out `attack` (0/2257 real decisions) and dropped to exactly 5, which helped (0/10 -> 5/10 on a combined test) | Tested the same crowding hypothesis here (11 labels vs. a trimmed 5, one state): the *opposite* happened — `attack_prob` dropped from 0.999 to 0.213 with fewer labels. No equivalent mechanism transfers; see [The real fix](#the-real-fix-pull-combat-out-into-its-own-noul-question) |
 | Measured latency, base/default weights (this machine) | mean 356ms (basic-scenario compare run); separately, mean 115ms / p50 100ms / p95 247ms (isolated `level`-scenario benchmark) | mean 21.3–30.9ms warmed (isolated smoke test / real in-loop run), p95 ≤ 30.4ms in the 150-step real run; ~23ms mean with the (now two-call) shoot gate enabled in a real 10-episode comparison run |
 | Measured latency, smallest tested variant | `rung_6.cact` (6-layer model-ladder rung, built via `needle build`): mean 35ms, p50 31ms, p95 86ms | N/A — Laya ships one checkpoint, no depth ladder to build a smaller rung from |
 | Confidence calibration on this task | Reported ~0.72 mean in a real basic-scenario run; vendor's own guidance suggests ~0.7 as an execute band | Reported 0.02–0.19 with the original single-`choice` design; 0.31–0.59 with the shoot gate (a `noul` P(true), not a `choice` top-label probability — different calibration semantics, not directly comparable to Needle's number) |
 | Base-checkpoint Doom behaviour, first honest look | "mostly turned and almost never chose shoot" (fixed afterward via triggers/docstrings) | Never chose shoot at all with combat competing inside one `choice` question (0/8 hand-built states); one 150-step run was 100% `turn_right` |
-| Fix mechanism available | Needle's own documented `triggers=` regex + docstrings — used successfully in 058 to fix the shoot/move_forward/wall/attack-crowding issues | No `triggers=`-equivalent for `choice`, and criteria-wording alone didn't help (one pass made it worse — see "keyword-bait bias" above) — but Laya's separate `noul` primitive, pulling combat out of the `choice` entirely, plus deterministic `AMMO>0`/bearing guards in code, did: real 10-episode result now matches the `heuristic` baseline (`mean_kills` 1.00, `completion_rate` 1.00) |
+| Fix mechanism available | Needle's own documented `triggers=` regex + docstrings — used successfully in the related experiment to fix the shoot/move_forward/wall/attack-crowding issues | No `triggers=`-equivalent for `choice`, and criteria-wording alone didn't help (one pass made it worse — see "keyword-bait bias" above) — but Laya's separate `noul` primitive, pulling combat out of the `choice` entirely, plus deterministic `AMMO>0`/bearing guards in code, did: real 10-episode result now matches the `heuristic` baseline (`mean_kills` 1.00, `completion_rate` 1.00) |
 
 The latency gap is the clearest win for Laya's architecture on this
 machine — even Needle's *smallest* tested rung (35ms mean) is slower than
@@ -945,8 +951,8 @@ for exactly this kind of problem. Whether a fine-tuned Laya checkpoint
 notebook) would close the remaining gaps (calibration semantics, the
 bearing guard still being enforced in code rather than learned) is an
 open question this project didn't attempt to answer — that would be
-training a model for this task, out of scope here, same as 058 stayed
-out of RL training for Needle.
+training a model for this task, out of scope here, same as the related
+experiment stayed out of RL training for Needle.
 
 ## Installation
 
@@ -997,7 +1003,7 @@ Runs all three through identical episodes and prints a side-by-side table
 
 ## Viewing results
 
-Same JSONL logging scheme as the sibling project: every run writes
+Same JSONL logging scheme as that earlier pipeline: every run writes
 `<run_name>.steps.jsonl` and `<run_name>.episodes.jsonl` under `logs/`
 (pass `--run-name` to control the name; the default **appends** across
 repeated invocations). Each step row has the full world-state text Laya
@@ -1018,26 +1024,26 @@ All exposed as CLI flags on `experiments/run.py` and `experiments/compare.py`:
 
 | Flag | What it controls |
 |---|---|
-| `--scenario {basic,my_way_home,level}` | Same three scenarios as the sibling project. Only `basic` has been run and verified here (see Roadmap). |
-| `--action-set {stage1,full}` | `stage1`: 4 labels. `full`: 11 labels (10 canonical actions + `wait`). Unlike the sibling project, there is no "5 or fewer" tool-count guidance to work around here — Laya's `choice` type takes the whole `criteria` dict in one pass regardless of size. |
-| `--decision-tics N` | Same control-frequency knob as the sibling project. |
+| `--scenario {basic,my_way_home,level}` | Same three scenarios as that earlier pipeline. Only `basic` has been run and verified here (see Roadmap). |
+| `--action-set {stage1,full}` | `stage1`: 4 labels. `full`: 11 labels (10 canonical actions + `wait`). Unlike the related Needle-based experiment, there is no "5 or fewer" tool-count guidance to work around here — Laya's `choice` type takes the whole `criteria` dict in one pass regardless of size. |
+| `--decision-tics N` | Same control-frequency knob as that earlier pipeline. |
 | `--memory {stateless,prev_state,rolling}` (or `0`/`1`/`2`) | Same three memory modes, unchanged from `state_encoder.py`. |
-| `--confidence-mode {always_execute,confidence_threshold}` + `--confidence-threshold F` | `confidence_threshold` substitutes `wait` when Laya's own calibrated confidence is below `F`. Defaults to **0.15**, not the sibling project's 0.6 — see [Verified behaviour](#verified-behaviour): this checkpoint's confidence on Doom states runs far lower than a tool-calling model's, so a tool-calling-model-appropriate threshold would gate almost every decision to `wait` here. |
-| `--model-id ID` | HuggingFace model id or local path passed to `laya.load()` — the closest equivalent to the sibling project's `--weights` model-ladder lever, except Laya ships one checkpoint, not a depth ladder to sweep. |
+| `--confidence-mode {always_execute,confidence_threshold}` + `--confidence-threshold F` | `confidence_threshold` substitutes `wait` when Laya's own calibrated confidence is below `F`. Defaults to **0.15**, not the 0.6 used for Needle in the related experiment — see [Verified behaviour](#verified-behaviour): this checkpoint's confidence on Doom states runs far lower than a tool-calling model's, so a tool-calling-model-appropriate threshold would gate almost every decision to `wait` here. |
+| `--model-id ID` | HuggingFace model id or local path passed to `laya.load()` — the closest equivalent to the related experiment's `--weights` model-ladder lever, except Laya ships one checkpoint, not a depth ladder to sweep. |
 | `--device {cuda,mps,cpu}` | Forces a device instead of auto-detection. Omit it — auto-detection correctly picked `mps` on this machine with no configuration. |
-| `--no-goal-line` | Omit the `GOAL` line from the world-state text — same toggle as the sibling project, same open empirical question (does it change anything at all). |
+| `--no-goal-line` | Omit the `GOAL` line from the world-state text — same toggle as that earlier pipeline, same open empirical question (does it change anything at all). |
 | `--no-stuck-recovery` / `--no-threat-response` | Same two controller-level safety nets, ported unchanged from `controller.py` — see that module for what each does. |
 | `--no-shoot-gate` | Use the original single-`choice`-call design (combat competes directly against move/turn) instead of the default `noul` shoot gate + `AMMO>0`/bearing guards — see [The real fix](#the-real-fix-pull-combat-out-into-its-own-noul-question). Mainly useful for regression/comparison runs against the pre-fix behaviour. |
 | `--shoot-gate-threshold F` | `P(should_shoot)` cutoff for the gate (default **0.45**) — picked directly from a real 8-state spread (see the shoot-gate section), not a calibrated cutoff against a held-out set. |
 | `--no-turn-loop-recovery` | Disable the safety net that forces a `move_forward` attempt after too many consecutive *executed* turns (`controller.TurnLoopRecoveryConfig`) — found on a real `--scenario level` run stuck turning in a corner; later broadened to fix the real wall-hugging bug (see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs)). |
 | `--no-threat-engagement` | Disable the safety net that turns toward a visible, near-enough, off-center enemy instead of letting Laya's movement choice stand (`controller.ThreatEngagementConfig`) — found on a real run that died to a zombieman it never turned to face. |
-| `--no-low-health-retreat` / `--low-health-threshold N` / `--emergency-health-threshold N` | Disable/tune the safety net that retreats (or, below the emergency threshold, overrides even an attack) when a visible enemy is present and health is low (`controller.LowHealthRetreatConfig`) — ported from the sibling Needle project. |
+| `--no-low-health-retreat` / `--low-health-threshold N` / `--emergency-health-threshold N` | Disable/tune the safety net that retreats (or, below the emergency threshold, overrides even an attack) when a visible enemy is present and health is low (`controller.LowHealthRetreatConfig`) — ported from the related Needle-based experiment. |
 | `--no-exploration-nudge` / `--exploration-streak-threshold N` | Disable/tune the circling detector (`controller.ExplorationNudgeConfig`) — see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs) for how its override action changed from a blind guess to directed frontier-seeking. |
 | `--no-frontier-exploration` / `--frontier-lookahead-cells F` | Revert ExplorationNudgeConfig's override to the old blind guess, or tune how many grid cells ahead each candidate heading is projected (`controller.FrontierExplorationConfig`) — see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs). |
 | `--no-door-use` / `--door-use-stall-threshold N` | Disable/tune the safety net that tries `use` once after `WALL ahead near` holds for N consecutive steps (`controller.DoorUseConfig`) — added after real logged data showed `use` never wins Laya's movement choice on its own (max probability 0.169 over 2,950 real decisions, 0 times chosen). |
 | `--no-secret-search` | Disable the systematic turn-and-use sequence that engages once frontier exploration has stopped finding new territory (`controller.SecretSearchConfig`) — see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs). |
 | `--no-wall-follow` / `--wall-follow-hand {left,right}` | Disable/pick the hand for the classic maze wall-following fallback (`controller.WallFollowConfig`) — engages once plain nudging *and* a full secret-door sweep have both come up empty; see [Stage 4/5](#stage-45-real-wayfinding-secret-search-and-three-more-real-bugs). |
-| `--window-scale {1,2,3}` | Doom window size with `--render`: 1=320×240, 2=640×480 (exact 2×), 3=1024×768 (closest 4:3 preset to 3× — ViZDoom has no exact 3×). Purely a display size; perception.py samples by fraction of width/height, so behaviour is unaffected — ported from the sibling Needle project. |
+| `--window-scale {1,2,3}` | Doom window size with `--render`: 1=320×240, 2=640×480 (exact 2×), 3=1024×768 (closest 4:3 preset to 3× — ViZDoom has no exact 3×). Purely a display size; perception.py samples by fraction of width/height, so behaviour is unaffected — ported from the related Needle-based experiment. |
 
 ## Why there's no system prompt
 
@@ -1045,7 +1051,7 @@ All exposed as CLI flags on `experiments/run.py` and `experiments/compare.py`:
 `system`, `instructions`, or persona parameter of any kind exists to even
 consider using — there's nothing analogous to Needle's facts-only
 `system=` to invent workarounds for. The brief's priority list is
-injected the same way as in the sibling project: one `GOAL` line at the
+injected the same way as in that earlier pipeline: one `GOAL` line at the
 top of the world-state text itself (`state_encoder.GOAL_LINE`), since
 that's the only text Laya actually reads. Whether it changes anything is
 the same open, measurable question as before (`--no-goal-line`).
@@ -1056,8 +1062,8 @@ Covered in depth in [Verified behaviour](#verified-behaviour) above:
 `laya.Agent` (0.1.6) exposes no `reset` method at all, and 200 consecutive
 identical `predict()` calls showed no latency trend on this machine —
 there's no persistent model state to reset and no confirmed staleness
-failure mode to guard against, unlike the sibling project's Needle
-wrapper. The one thing `LayaAgent.reset()` actually does is clear its own
+failure mode to guard against, unlike the Needle wrapper used in the
+related experiment. The one thing `LayaAgent.reset()` actually does is clear its own
 internal `_gate_encoder`'s AREA visited-cells bookkeeping once per episode
 (see [The real fix](#the-real-fix-pull-combat-out-into-its-own-noul-question)
 for why the shoot gate has its own separate `StateEncoder`) — not a Laya
@@ -1087,7 +1093,7 @@ pytest              # 140 tests, pure logic — no vizdoom process needed, and
 ```
 laya-doom/
     config/basic.cfg,        ViZDoom scenario configs, ported unchanged
-    my_way_home.cfg,         from the sibling project
+    my_way_home.cfg,         from that earlier pipeline
     level.cfg
     laya_doom/
         doom_env.py          vizdoom.DoomGame wrapper + execute(action_name)
@@ -1116,7 +1122,7 @@ laya-doom/
 
 ## Research questions this is built to answer
 
-Same list as the sibling project, minus the model-ladder-specific one
+Same list as the related Needle-based experiment, minus the model-ladder-specific one
 (Laya has no ladder to sweep):
 
 1. Does Laya react sensibly to enemies at all? — **tested, answer is no**
@@ -1170,7 +1176,7 @@ Not built:
   this (a T4-GPU Colab notebook for fine-tuning on custom data); doing so
   would be training a model for Doom-playing specifically, which is
   out of scope here the same way RL training was out of scope for the
-  sibling Needle project. Would also plausibly fix the calibration gaps
+  related Needle-based experiment. Would also plausibly fix the calibration gaps
   the shoot gate currently papers over in code (the `AMMO>0` precondition,
   bearing discrimination).
 - **`score` question type** — only `choice` and (as of the shoot-gate fix)
@@ -1188,12 +1194,12 @@ Not built:
   to avoid exactly the kind of "kept tuning knobs until a number looked
   good" pattern this project's methodology avoids elsewhere.
 - **Browser dashboard, multi-agent, multi-map progression** — same
-  unbuilt items as the sibling project's own roadmap, for the same reasons.
+  unbuilt items as the related Needle-based experiment's own roadmap, for the same reasons.
 
 ## Known quirks
 
 - Everything under perception.py/state_encoder.py's own "Known quirks" in
-  the sibling project's README applies here unchanged (depth-buffer
+  the related Needle-based experiment's README applies here unchanged (depth-buffer
   calibration is approximate, `basic`'s built-in reward script vs.
   tracked game variables can disagree, `EpisodeResult.completed` is an
   inferred proxy) — this project didn't re-verify or re-derive any of
