@@ -52,6 +52,10 @@ distance travelled all improved measurably on real runs; **a real level
 exit (`completed=True`) was still never observed**, reported plainly
 rather than glossed over.
 
+## Demo
+
+[![Laya plays Doom](https://img.youtube.com/vi/-Vp0UT_nzz8/maxresdefault.jpg)](https://www.youtube.com/watch?v=-Vp0UT_nzz8)
+
 ## Architecture
 
 ```
