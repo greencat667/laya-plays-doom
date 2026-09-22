@@ -14,3 +14,9 @@ _vizdoom.ini
 # this project directory instead of the default ~/.cache/huggingface.
 .cache/
 huggingface_cache/
+
+# Local background-music asset, not for the public repo.
+*.flac
+
+# Claude Code session state (worktrees, etc.), not project source.
+.claude/
