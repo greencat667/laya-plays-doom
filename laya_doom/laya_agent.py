@@ -1,35 +1,29 @@
 """Wraps a laya.Agent bound to one action set (see actions.py).
 
-Architectural note — the biggest real difference from the sibling Needle
-project, not an assumption: Laya is not an autoregressive tool-calling
-model. ``laya.Agent.predict(state, questions)`` runs ONE non-autoregressive
+Architectural note: Laya is not an autoregressive tool-calling model.
+``laya.Agent.predict(state, questions)`` runs ONE non-autoregressive
 forward pass over a `choice` question (a fixed label set with a short
 "criteria" description per label) and returns per-label probabilities plus
 a calibrated confidence for the top label — there is no decode loop, no
-free-text generation, and no ``@needle.tool``/trigger/schema-compilation
-mechanism to design around. Laya's own top-level API
-(``dir(laya)`` on the installed 0.1.6 package) has no ``reset`` at all:
-``laya.Agent`` only exposes ``predict`` and ``system_one``. That's not an
-oversight this wrapper works around — the sibling Needle project needed
-``NeedleAgent.reset()``/``reset_every`` specifically because a long streak
-of ``complete()`` calls without resetting could make a *later* autoregressive
-decode pathologically slow on repetitive input (confirmed there: 38 calls in,
-57s+ and climbing). Laya has no persistent internal state between
-``predict()`` calls for that staleness to accumulate in — each call is an
-independent forward pass. This was verified empirically on this machine,
-not just inferred from the API shape: 200 consecutive ``predict()`` calls
-with the byte-identical repetitive input showed no latency trend at all
-(first-half mean 21.58ms, second-half mean 21.54ms; max single call 25.56ms,
-no outlier blowup) — see the project README's "Laya vs Needle" section for
-the full numbers. ``reset()`` is therefore a documented no-op below, not a
+free-text generation, and no trigger/schema-compilation mechanism to
+design around. Laya's own top-level API (``dir(laya)`` on the installed
+0.1.6 package) has no ``reset`` at all: ``laya.Agent`` only exposes
+``predict`` and ``system_one``. That's not an oversight this wrapper
+works around — Laya has no persistent internal state between
+``predict()`` calls, so there's nothing that could go stale or need
+periodic clearing: each call is an independent forward pass. This was
+verified empirically on this machine, not just inferred from the API
+shape: 200 consecutive ``predict()`` calls with the byte-identical
+repetitive input showed no latency trend at all (first-half mean
+21.58ms, second-half mean 21.54ms; max single call 25.56ms, no outlier
+blowup). ``reset()`` is therefore a documented no-op below, not a
 missing feature.
 
 No GOAL/system-prompt mechanism either: ``predict()`` takes only ``state``
-(str or dict) and ``questions`` (typed dict) — there's nothing resembling
-Needle's facts-only ``system=`` parameter to even consider using. The
-brief's priority line is injected into the state text itself, exactly as
-in the sibling project (see state_encoder.GOAL_LINE), since that is the
-only text Laya actually reads.
+(str or dict) and ``questions`` (typed dict) — there's no separate
+facts-only ``system=`` parameter to consider using. The brief's priority
+line is injected into the state text itself (see state_encoder.GOAL_LINE),
+since that is the only text Laya actually reads.
 """
 
 from __future__ import annotations
@@ -47,14 +41,12 @@ ConfidenceMode = Literal["always_execute", "confidence_threshold"]
 
 QUESTION_ID = "action"
 
-# Criteria text per canonical action name (see actions.get_action_names),
-# adapted from the docstrings the sibling Needle project wrote for its
-# @needle.tool functions — kept short, one clause per condition, since
-# that's the vocabulary style Laya's `criteria` dict expects (label ->
-# short description), not a docstring for a compiled function signature.
+# Criteria text per canonical action name (see actions.get_action_names) —
+# kept short, one clause per condition, matching the vocabulary style
+# Laya's `criteria` dict expects (label -> short description).
 #
 # This is CRITERIA_V1 from the project's own before/after test (see
-# README "Laya vs Needle" -> base-checkpoint behaviour). A second,
+# README "How the decision engine works" -> base-checkpoint behaviour). A second,
 # far-more-literal wording pass (CRITERIA_V2 in that test) was tried and
 # did NOT clearly improve behaviour on the untuned base checkpoint — it
 # traded one bias (almost never shooting) for a different one (shooting
@@ -94,9 +86,8 @@ _COMBAT_ACTION: dict[ActionSet, str] = {"stage1": "shoot", "full": "attack"}
 
 # Laya's own separate documented question primitive for exactly this kind
 # of independent binary judgment (a calibrated P(true), not a competing
-# label in a multi-way softmax) — used the same way the sibling Needle
-# project used Needle's own `triggers=` mechanism: reach for the vendor's
-# own documented tool for the specific failure, not an invented workaround.
+# label in a multi-way softmax) — reaching for the vendor's own documented
+# tool for the specific failure, not an invented workaround.
 #
 # Real measured motivation (scripts/probe_criteria.py, 8 hand-built
 # states, real model): with `shoot`/`attack` competing inside the normal
@@ -204,8 +195,9 @@ class LayaAgent:
         # see README), ran far lower than a tool-calling model's execute-
         # band intuition would suggest: 0.02-0.19 across a spread of
         # characteristic Doom states, both before and after the criteria
-        # wording pass. A default of 0.6 (the sibling project's Needle
-        # default) would gate almost every decision to "wait" here. Kept
+        # wording pass. A higher default (e.g. 0.6, a typical execute-band
+        # threshold for a calibrated tool-calling model) would gate almost
+        # every decision to "wait" here. Kept
         # low by default so --confidence-mode confidence_threshold is at
         # least usable out of the box; see the README before assuming this
         # threshold means the same thing it does for a calibrated
@@ -308,9 +300,10 @@ class LayaAgent:
 
         want_shoot = shoot_prob is not None and shoot_prob >= self.shoot_gate_threshold
         # Two deterministic guards, layered on top of the model's own
-        # judgment rather than trusting it — the sibling Needle project's
-        # own pattern (StuckRecoveryConfig/ThreatResponseConfig: a
-        # transparent, always-logged override, not a hidden one).
+        # judgment rather than trusting it — the same pattern as this
+        # project's other safety nets (StuckRecoveryConfig/
+        # ThreatResponseConfig: a transparent, always-logged override,
+        # not a hidden one).
         #
         # AMMO>0: the gate alone scored a no-ammo state at P=0.512 (above
         # threshold) despite its own instructions explicitly requiring

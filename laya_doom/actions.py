@@ -8,12 +8,11 @@ Two action sets are provided:
 - ``full``: the complete action list (forward/backward, strafing, small/large
   turns, attack, use) plus the controller-level ``wait`` fallback.
 
-Unlike the sibling Needle project, there is no tool-schema/trigger
-machinery here at all: Laya's ``predict()`` picks among a fixed set of
-``choice`` labels in one forward pass (see laya_agent.py) rather than
-compiling Python function signatures into a decode grammar, so this module
-is intentionally smaller than needle_doom's actions.py — it keeps only the
-canonical action-name vocabulary, the ActionSpec/button/tic tables, and
+There is no tool-schema/trigger machinery here at all: Laya's ``predict()``
+picks among a fixed set of ``choice`` labels in one forward pass (see
+laya_agent.py) rather than compiling Python function signatures into a
+decode grammar, so this module stays intentionally small — it keeps only
+the canonical action-name vocabulary, the ActionSpec/button/tic tables, and
 ``get_action_names``. The mapping from Laya's chosen label straight to a
 canonical action name (no argument-based resolution, since every action is
 already its own label) lives in laya_agent.py, not here.

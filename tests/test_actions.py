@@ -39,7 +39,7 @@ def test_get_action_names():
     assert actions.get_action_names("full") == actions.FULL_ACTIONS
 
 
-# No resolve_call_to_action here (unlike the sibling Needle project):
+# No resolve_call_to_action here:
 # Laya's choice labels ARE the canonical action names directly (see
 # laya_agent.build_criteria), so there's no tool-name/arguments indirection
 # to resolve — covered instead by tests/test_laya_agent.py.

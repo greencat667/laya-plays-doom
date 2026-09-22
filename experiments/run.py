@@ -151,7 +151,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-low-health-retreat",
         action="store_true",
         help="disable the safety net that retreats when a visible enemy is present and health is low (see "
-        "controller.LowHealthRetreatConfig) — ported from the sibling Needle project",
+        "controller.LowHealthRetreatConfig)",
     )
     p.add_argument(
         "--low-health-threshold",
@@ -169,7 +169,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-exploration-nudge",
         action="store_true",
         help="disable the circling-breaker safety net (see controller.ExplorationNudgeConfig) — a first pass "
-        "at exit-seeking, not real wayfinding — ported from the sibling Needle project",
+        "at exit-seeking, not real wayfinding",
     )
     p.add_argument(
         "--exploration-streak-threshold",
@@ -229,7 +229,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1,
         help="Doom window size with --render: 1=320x240, 2=640x480 (exact 2x), 3=1024x768 (closest 4:3 preset "
         "to 3x — ViZDoom has no exact 3x). Purely a display size; perception.py samples by fraction of "
-        "width/height, so behavior is unaffected — ported from the sibling Needle project.",
+        "width/height, so behavior is unaffected.",
     )
     p.add_argument("--dashboard", action="store_true", help="show the live terminal dashboard")
     p.add_argument("--seed", type=int, default=None)

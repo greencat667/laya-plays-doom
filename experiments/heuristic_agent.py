@@ -21,10 +21,9 @@ no equivalent behavior at all before (it only ever reacted to enemies).
 That paper is also worth reading for what it says top agents from
 Facebook/Intel/CMU-era research *couldn't* do even with full RL training:
 they "circled the same location," didn't chase targets, and made "zero
-sophisticated evasion" attempts against incoming attacks — several of the
-same failure modes seen with small models in the sibling Needle project
-aren't unique to a tool-calling model either, they're known-hard in this
-exact environment.
+sophisticated evasion" attempts against incoming attacks — several of
+the same failure modes seen with small models on this task, so they're
+known-hard in this exact environment, not specific to any one model.
 """
 
 from __future__ import annotations

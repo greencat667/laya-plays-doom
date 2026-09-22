@@ -116,9 +116,9 @@ def main() -> None:
     run_choice(agent, v1, "V1 shipped (reproduce baseline)")
 
     # V3 — a single binary reframe within `choice` itself: two labels only,
-    # "engage" vs "reposition", to test whether Needle's crowding fix
-    # (fewer competing labels) has any equivalent effect on Laya's
-    # single-pass softmax, without changing wording style at all (V1's
+    # "engage" vs "reposition", to test whether a crowding fix (fewer
+    # competing labels) has any effect on Laya's single-pass softmax,
+    # without changing wording style at all (V1's
     # shoot wording, verbatim, just with move/turn collapsed into one
     # competing label instead of three).
     v3 = {
@@ -127,8 +127,8 @@ def main() -> None:
     }
     run_choice(agent, v3, "V3 two-label collapse (crowding test)")
 
-    # V4 — the Needle-tools-guide-derived hypothesis, ported directly: is
-    # `shoot` losing because the OTHER labels are worded more concretely
+    # V4 — a wording-bias hypothesis: is `shoot` losing because the
+    # OTHER labels are worded more concretely
     # and literally, catching more of the model's attention share? Make
     # every non-shoot label as terse as possible (single clause) instead
     # of shoot being the only concrete one among vaguer competitors.
@@ -141,8 +141,7 @@ def main() -> None:
     run_choice(agent, v4, "V4 terse-symmetric wording")
 
     # The `noul` gate — Laya's own separate documented primitive for
-    # exactly this kind of independent binary judgment (P(true)), used the
-    # way the sibling project used Needle's own triggers= mechanism: not
+    # exactly this kind of independent binary judgment (P(true)): not
     # invented, one of Laya's three documented question types. Tests
     # whether taking shoot OUT of the crowded multi-way choice entirely
     # and asking it as its own calibrated boolean changes anything.
@@ -157,10 +156,10 @@ def main() -> None:
         "should_shoot gate, literal wording",
     )
 
-    # Needle-crowding analogy on the `full` action set (11 labels) vs a
+    # Crowding-hypothesis test on the `full` action set (11 labels) vs a
     # trimmed 5-label version (move_forward, turn_left_small,
-    # turn_right_small, attack, use) mirroring the sibling project's fix
-    # (drop to <=5). Single state: enemy front + open path, full vocabulary.
+    # turn_right_small, attack, use), dropping to <=5 competing labels.
+    # Single state: enemy front + open path, full vocabulary.
     full_11 = {
         "move_forward": "the path ahead isn't blocked and no enemy is lined up to shoot",
         "move_backward": "retreat, e.g. overwhelmed at close range",
@@ -186,7 +185,7 @@ def main() -> None:
     questions_5 = {"action": {"type": "choice", "instructions": "Which action should the player take right now?", "criteria": full_5}}
     r11 = agent.predict(state, questions_11)["answers"]["action"]
     r5 = agent.predict(state, questions_5)["answers"]["action"]
-    print("\n=== Needle-crowding analogy: full action set, enemy front + open path ===")
+    print("\n=== crowding hypothesis: full action set, enemy front + open path ===")
     print(f"11 labels -> {r11['choice']:12s} conf={r11['confidence']:.3f}  attack_prob={r11['probabilities'].get('attack', 0):.3f}")
     print(f"5 labels  -> {r5['choice']:12s} conf={r5['confidence']:.3f}  attack_prob={r5['probabilities'].get('attack', 0):.3f}")
 
@@ -195,9 +194,9 @@ def main() -> None:
 
 def check_combined_gate(agent, threshold: float = 0.45) -> None:
     """Sanity-check the actual design going into laya_agent.py: noul gate
-    decides shoot vs not, with a deterministic AMMO>0 guard layered on top
-    (mirroring the sibling project's own pattern of deterministic safety
-    nets layered on a model decision, always visible, never hidden)."""
+    decides shoot vs not, with a deterministic AMMO>0 guard layered on
+    top — a deterministic safety net layered on a model decision,
+    always visible, never hidden."""
     v1_movement = {
         "move_forward": "the path ahead isn't blocked and no enemy is lined up to shoot — the default action for making progress and exploring",
         "turn_left": "the path ahead is blocked or a wall is near, or to face an enemy that isn't directly ahead, turning left",

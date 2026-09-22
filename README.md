@@ -13,17 +13,12 @@ ViZDoom → perception → compact world-state text → Laya.predict() → choic
 
 This project reuses a Doom-playing pipeline — ViZDoom setup, perception,
 world-state text encoding, metrics, the stuck-recovery/threat-response
-safety nets — that was originally built for a related but separate
-experiment, which asked the same question of Cactus Compute's Needle 3,
-an autoregressive tool-calling model, as the decision engine instead of
-Laya. That earlier project is **not part of this repository**, so where
-this README cites Needle numbers below (latency, confidence,
-crowding-fix behaviour), they're comparative results measured on that
-other setup, not something you can click through and verify here. The
-**only** thing that changes in this repo is the decision engine. This
-project is fully self-contained (own venv, own `requirements.txt`, own
-git repo) and has no dependency on that earlier project or on
-`cactus-needle`.
+safety nets — that was adapted from earlier work using a different,
+autoregressive decision engine. That earlier project is **not part of
+this repository**. The **only** thing that changes in this repo is the
+decision engine. This project is fully self-contained (own venv, own
+`requirements.txt`, own git repo) and has no dependency on that earlier
+work.
 
 **Status**: the four-action proof of concept (`basic` scenario) works
 end to end on Apple Silicon macOS with real ViZDoom and the
@@ -158,34 +153,6 @@ wayfinding enabled (up to ~34,000 distance units and 64–83 distinct
 visited grid cells over a 4,000-step run), but a level exit
 (`completed=True`, ViZDoom's own `map_exit_reward >= 1` signal) has not
 been observed in any run tried so far.
-
-## Laya vs Needle
-
-Measured numbers from both projects on the same machine, not vendor
-marketing figures. The Needle numbers come from the separate, unlinked
-experiment described above; the Laya numbers are from this repository.
-
-| | Needle 3 (related experiment) | Laya (this project) |
-|---|---|---|
-| Mechanism | Autoregressive tool-calling: decode loop produces a structured function call + free-text reasoning | Non-autoregressive: one forward pass over typed `choice`/`score`/`noul` questions, no generation at all |
-| Persistent state between decisions | Yes — internal state that needed periodic `reset()` (`reset_every`, default 15) to avoid a decode stall on repetitive input | None — `laya.Agent` has no `reset()` method and no persistent state between calls |
-| System/goal-priority injection | No `system=` prose mechanism (facts-only); `GOAL` line injected into world-state text instead | No `system`/instructions parameter on `predict()`; same `GOAL`-line-in-state-text approach |
-| Tool/label count constraint | 5 or fewer tools render directly before retrieval filters; dropping `full`'s original 6 tools to 5 fixed `attack` being crowded out (0/2257 → helped) | Tested the same crowding hypothesis (11 labels vs. a trimmed 5): the opposite happened — `attack_prob` dropped from 0.999 to 0.213 with fewer labels. Doesn't transfer; see [How the decision engine works](#how-the-decision-engine-works) |
-| Measured latency, base/default weights | mean 356ms (basic-scenario), mean 115ms / p95 247ms (level-scenario) | mean 21–31ms, ~23ms with the shoot gate enabled |
-| Measured latency, smallest tested variant | `rung_6.cact` (6-layer model-ladder rung): mean 35ms | N/A — Laya ships one checkpoint, no depth ladder |
-| Confidence calibration on this task | ~0.72 mean; vendor guidance suggests ~0.7 as an execute band | 0.02–0.19 with the plain `choice` call; 0.31–0.59 with the shoot gate's `noul` P(true) — different calibration semantics, not directly comparable |
-| Base-checkpoint Doom behaviour, first look | Mostly turned, almost never chose shoot (fixed via triggers/docstrings) | Never chose shoot with combat competing inside one `choice` question (0/8 hand-built states) |
-| Fix mechanism available | `triggers=` regex + docstrings on the tool schema | No `triggers=` equivalent for `choice`; fixed instead with a separate `noul` question plus deterministic `AMMO>0`/bearing guards |
-
-The clearest architectural win here is latency: even Needle's smallest
-tested rung (35ms mean) is slower than Laya's steady-state mean (21ms).
-Both projects hit the same underlying problem — the model not reliably
-firing the combat action — and fixed it with a mechanism specific to
-their own architecture (Needle's `triggers=`/tool-count guidance vs.
-Laya's separate `noul` question type). Whether a fine-tuned Laya
-checkpoint would close the remaining calibration gap is untested —
-Laya supports fine-tuning via a T4-GPU Colab notebook, but training a
-model for this task was out of scope here.
 
 ## Installation
 
@@ -361,8 +328,6 @@ laya-doom/
 7. What decision frequency works best? (`--decision-tics`)
 8. How does it compare to the tiny heuristic? Matches it on combat
    metrics; see [How the decision engine works](#how-the-decision-engine-works).
-9. How does Laya's architecture compare to Needle's for this task? — see
-   [Laya vs Needle](#laya-vs-needle).
 
 ## Roadmap
 

@@ -6,7 +6,7 @@ state text, the executed action, the subsequent result, confidence,
 latency) and ``<run_name>.episodes.jsonl`` (one row per episode summary).
 
 Note on ``StepRecord.tool_calls``: kept as a field (see controller.py) for
-schema parity with the sibling Needle project's logs, but it's always an
+log-schema parity with an earlier tool-calling pipeline, but it's always an
 empty list here — Laya has no tool-call concept at all (see laya_agent.py's
 module docstring). The real per-decision signal worth inspecting for Laya
 is ``reasoning`` (a compact rendering of the real returned probability

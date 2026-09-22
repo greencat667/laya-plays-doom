@@ -216,9 +216,8 @@ def test_low_health_retreat_does_not_override_attack_above_emergency():
 
 def test_low_health_retreat_overrides_attack_at_emergency_threshold():
     # health=8 is at/below emergency_health_threshold(10) — rule 199/119
-    # (docs/tiny-doom-runtime-policy-200-rules.md), ported from the
-    # sibling Needle project: survival overrides finishing a kill once
-    # health is genuinely critical, not just low.
+    # (docs/tiny-doom-runtime-policy-200-rules.md): survival overrides
+    # finishing a kill once health is genuinely critical, not just low.
     config = LowHealthRetreatConfig(health_threshold=20, emergency_health_threshold=10)
     perc = make_perception(health=8, enemies=(_enemy("front"),))
     assert _should_retreat_from_visible_threat(config, perc, "attack") is True

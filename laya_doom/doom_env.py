@@ -31,10 +31,9 @@ FREEDOOM2_PATH = os.path.join(os.path.dirname(vzd.__file__), "freedoom2.wad")
 LEVEL_SCENARIO = "level"
 DEFAULT_LEVEL_MAP = "MAP01"
 
-# Ported from the sibling Needle project's --window-scale (same rationale,
-# same numbers): perception.py samples the depth/labels buffers by
+# --window-scale: perception.py samples the depth/labels buffers by
 # *fraction* of width/height, not fixed pixel offsets, so window size is
-# purely a "how big is the window to watch" knob — verified there that
+# purely a "how big is the window to watch" knob — verified that
 # perceive() runs correctly at 1024x768, real movement/health tracked
 # fine. No exact 3x of the base 320x240 exists in vzd.ScreenResolution
 # (checked the enum directly) — RES_1024X768 is the closest 4:3-preserving

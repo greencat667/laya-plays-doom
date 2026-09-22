@@ -115,8 +115,7 @@ class StateEncoder:
         # Set by encode() whenever include_area_hint is on — exposed so
         # controller.run_episode can read the real AREA new/revisited
         # signal directly (for ExplorationNudgeConfig's circling detector)
-        # without re-deriving it by parsing the encoded text. Ported from
-        # the sibling Needle project's own `last_area_new`.
+        # without re-deriving it by parsing the encoded text.
         self.last_area_new: bool | None = None
 
     def reset(self) -> None:

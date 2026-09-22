@@ -84,8 +84,7 @@ class StuckRecoveryConfig:
     reset-on-non-move version let the override's own turn erase the
     streak every time it fired, so the very next move proposal got a
     fresh 2-strike allowance before overriding again, alternating
-    move/forced-turn forever with zero net escape. Ported the fix from
-    the sibling Needle project's own identical finding.
+    move/forced-turn forever with zero net escape.
 
     A second, real "wall-hugging" freeze was found later by watching a
     fresh ``--scenario level`` run with ``override_reason`` logging added
@@ -199,10 +198,9 @@ class ExplorationNudgeConfig:
     safety net above isn't already handling this step.
     ``--no-exploration-nudge`` disables it.
 
-    Originally ported from the sibling Needle project as a *blind* nudge
-    (pick whichever open side, or alternate by step parity — the same
-    ``_recovery_turn`` a wall-stuck agent gets) with an explicit caveat in
-    both projects' READMEs: it "can't know which heading actually leads
+    Originally a *blind* nudge (pick whichever open side, or alternate by
+    step parity — the same ``_recovery_turn`` a wall-stuck agent gets)
+    with an explicit caveat: it "can't know which heading actually leads
     toward unexplored space" because perception.py deliberately never
     trusts ViZDoom's ANGLE sign convention. That constraint no longer
     applies to *this* mechanism specifically — see FrontierExplorationConfig
@@ -374,16 +372,14 @@ class ThreatResponseConfig:
     outside perception.py's FOV), turn instead of letting Laya's decision
     stand if it wasn't already a turn.
 
-    Ported over from the sibling Needle project, where this safety net was
-    added because the textual THREAT signal alone (there, a `turn` tool
-    trigger) wasn't enough — tested directly against a real near-death
-    state (HEALTH 3, just took -15 damage, no visible enemy), that model
-    still chose move_forward with the THREAT line present. Laya has no
-    trigger mechanism at all (see actions.py/laya_agent.py — Laya picks
-    among fixed choice labels via one forward pass, nothing regex-based),
-    so this specific failure mode hasn't been independently re-verified
-    here; kept on by default as the same logged-not-hidden precaution
-    either way. Overridden steps set `overridden=True` and keep
+    This safety net exists because the textual THREAT signal alone isn't
+    guaranteed to change the model's decision — a purely textual cue can
+    be present in the state and still lose out to a competing action.
+    Laya has no trigger mechanism at all (see actions.py/laya_agent.py —
+    Laya picks among fixed choice labels via one forward pass, nothing
+    regex-based), so this specific failure mode hasn't been independently
+    verified against Laya itself; kept on by default as a logged-not-hidden
+    precaution either way. Overridden steps set `overridden=True` and keep
     `proposed_action` as what Laya actually picked. `--no-threat-response`
     disables it.
     """
@@ -472,11 +468,8 @@ class LowHealthRetreatConfig:
     retreat itself, which are left alone. Below ``emergency_health_threshold``,
     retreat overrides even an attack decision.
 
-    Ported directly from the sibling Needle project (same defaults, same
-    reasoning — see ``needle_doom/controller.py``'s own
-    ``LowHealthRetreatConfig``), not reinvented here: that project found
-    the real gap in practice was specifically the *absence* of deliberate
-    disengagement when badly hurt, and grounded the two-threshold design
+    The real gap in practice was specifically the *absence* of deliberate
+    disengagement when badly hurt. The two-threshold design is grounded
     in docs/tiny-doom-runtime-policy-200-rules.md rule 199 ("nearly dead
     enemy does not justify remaining in lethal geometry") paired with rule
     119 ("health below 10% → survival, health and exit dominate
@@ -514,8 +507,7 @@ class StepRecord:
     keys_held: tuple[str, ...] = ()
     proposed_action: str = ""
     overridden: bool = False
-    # Which safety net fired, or "" when overridden is False. Ported from
-    # the sibling Needle project's own fix for the same real gap: with only
+    # Which safety net fired, or "" when overridden is False. With only
     # `overridden` logged, a batch run showed 121 large-turn overrides with
     # no way to tell whether they came from stuck_recovery or
     # exploration_nudge (both can produce the same turn_*_large action).
@@ -834,10 +826,10 @@ def run_episode(
         overridden = False
         override_reason = ""
         final_action = decision.action
-        # Priority order mirrors the sibling Needle project for the first
-        # four nets: survival (low-health retreat) outranks engaging a
-        # threat, which outranks reacting to an unseen attacker, which
-        # outranks plain navigation recovery — matching the playbook's own
+        # Priority order for the first four nets: survival (low-health
+        # retreat) outranks engaging a threat, which outranks reacting to
+        # an unseen attacker, which outranks plain navigation recovery —
+        # matching the playbook's own
         # "survival > threat control > navigation" hierarchy
         # (docs/tiny-doom-runtime-policy-200-rules.md's "core priority"
         # section). door_use sits just above the two turn-recovery nets:
@@ -958,11 +950,9 @@ def run_episode(
         # 0 right there -> next decision proposes strafe_left again with
         # a fresh 2-strike allowance -> same override fires again -> the
         # cycle repeats forever, alternating move/forced-turn, distance
-        # frozen. Ported the fix, not just the diagnosis, from the
-        # sibling Needle project's own `recovery_streak` (same root
-        # cause, same fix: only real position change resets the streak;
+        # frozen. The fix: only real position change resets the streak;
         # any override still counts against it regardless of what
-        # happened in between).
+        # happened in between.
         progressed = new_perception is not None and (
             (new_perception.x - perception.x) ** 2 + (new_perception.y - perception.y) ** 2
         ) ** 0.5 >= stuck_recovery.min_progress_units
@@ -1023,8 +1013,7 @@ def run_episode(
     # looking like a win.
     #
     # For scenario="level" there's since a real, documented signal
-    # instead — ported from the sibling Needle project's own fix:
-    # ViZDoom's own bundled scenarios/freedoom2.cfg sets
+    # instead: ViZDoom's own bundled scenarios/freedoom2.cfg sets
     # `map_exit_reward = 1`, "Reward for completing the level (exiting
     # through the exit)" — config/level.cfg now sets it too. Cross-checked
     # against total_reward() when available, since it's ground truth

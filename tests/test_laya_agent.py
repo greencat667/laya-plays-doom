@@ -6,10 +6,9 @@ real measured 0/8 result that motivated this), confidence-threshold
 gating on the movement fallback, and Decision field population.
 
 Doesn't load the real model: laya.load() downloads ~800MB of weights and
-runs on real torch/MPS, so it's faked out here exactly the way the sibling
-Needle project fakes out needle.Needle in test_needle_agent.py — this
-tests LayaAgent's own bookkeeping in isolation, not Laya's actual
-Doom-playing behaviour (that's what experiments/compare.py,
+runs on real torch/MPS, so it's faked out here — this tests LayaAgent's
+own bookkeeping in isolation, not Laya's actual Doom-playing behaviour
+(that's what experiments/compare.py,
 scripts/probe_criteria.py and the README's "Verified behaviour" section
 are for).
 """
