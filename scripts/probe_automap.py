@@ -1,7 +1,7 @@
 """Real investigation of ViZDoom's automap buffer -- enable it on a real
 ``level`` scenario, capture real buffers before/after moving and turning,
 and do simple numpy analysis of what's actually in them (see the README's
-"Automap buffer investigation" section for the conclusion this fed into:
+"Known quirks" for the conclusion this fed into:
 enabling it, real captured images, real per-pixel analysis, and an honest
 decision NOT to fold it into the decision pipeline).
 
@@ -72,7 +72,7 @@ def main() -> None:
         _save_png(buf, os.path.join(args.out_dir, f"{label}.png"))
         arr = buf.astype(np.int32)
         # The background fill color (top-left pixel is always background
-        # in these captures) is NOT literally black -- see the README:
+        # in these captures) is NOT literally black -- see the README's Known quirks:
         # revealed wall-line geometry is drawn in a different color, but
         # unrevealed regions use the SAME fill as revealed-but-empty
         # floor space. "black_frac" below is kept only as a sanity check

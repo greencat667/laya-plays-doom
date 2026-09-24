@@ -228,3 +228,15 @@ def test_summarize_result_death_and_none():
     dead = make_perception(alive=False)
     assert summarize_result(make_perception(), dead) == "died"
     assert summarize_result(make_perception(), None) == "episode_ended"
+
+
+def test_frontier_hint_line_only_when_enabled():
+    from laya_doom.state_encoder import EncoderConfig, StateEncoder
+
+    perc = make_perception()
+    off = StateEncoder(EncoderConfig()).encode(perc, None, None, None, frontier_hint="FRONTIER left near")
+    on = StateEncoder(EncoderConfig(include_frontier_hint=True)).encode(
+        perc, None, None, None, frontier_hint="FRONTIER left near"
+    )
+    assert "FRONTIER" not in off
+    assert "FRONTIER left near" in on.splitlines()

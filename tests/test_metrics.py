@@ -60,3 +60,13 @@ def test_summarize_episodes_aggregates():
 
 def test_summarize_episodes_empty():
     assert summarize_episodes([]) == {"episodes": 0}
+
+
+def test_override_rate_pools_steps_across_episodes_and_skips_old_rows():
+    rows = [
+        {"steps": 100, "overridden_steps": 10},
+        {"steps": 300, "overridden_steps": 90},
+        {"steps": 50},  # written before overridden_steps existed
+    ]
+    assert summarize_episodes(rows)["override_rate"] == 100 / 400
+    assert summarize_episodes([{"steps": 5}])["override_rate"] is None

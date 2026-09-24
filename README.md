@@ -153,6 +153,89 @@ visited grid cells over a 4,000-step run), but a level exit
 (`completed=True`, ViZDoom's own `map_exit_reward >= 1` signal) has not
 been observed in any run tried so far.
 
+## Frontier planner
+
+`laya_doom/planner.py`, on by default. It builds a map purely from
+experience: grid cells the player has stood in, and the cell-to-cell moves
+it actually made. A *frontier* is a (visited cell, cardinal heading) whose
+neighbour cell has never been visited. When the circling detector fires,
+the planner travels along known moves to the nearest untried frontier,
+squares up to its heading, and pushes forward; if the wall ahead doesn't
+give way it presses `use` once, then marks that frontier exhausted. Every
+edge of explored space gets tried exactly once, and aimed `use` is only
+spent there.
+
+It was built to break MAP01's first exploration ceiling: on most seeds the
+agent explored ~26 cells, everything before one door at x=736 that it
+reached for only 17 of 1,200 steps and pressed at the wrong angle. A
+paired 10-episode, 2,400-step run (`autoresearch run frontier_planner`):
+
+| | baseline | planner |
+|---|---|---|
+| new cells | 34.8 | 58.1 (better on 8/10 seeds) |
+| kills | 3.5 | 5.9 |
+| deaths | 1/10 | 0/10 |
+| completed | 0/10 | 0/10 |
+
+## Trained movement head (stuntd)
+
+[stuntd](https://github.com/bladedevoff/stuntd) fine-tunes Laya's own
+decision head on a frozen encoder from (text, answer) pairs.
+`scripts/distill_movement_head.py` builds those pairs from logged play:
+moves that achieved something, plus the reactive safety nets' turns
+(threat engagement, stuck recovery), with every example also mirrored
+left↔right because the raw data inherited Laya's left bias (455
+`strafe_left` vs 1 `strafe_right`). `LayaAgent(movement_head=...)` then
+answers the movement question with that head while the shoot gate stays
+zero-shot. stuntd needs laya ≥ 0.3.4, so this runs in a separate env with
+laya 0.3.7 (which reproduced the 0.1.6 baseline byte-for-byte).
+
+| | zero-shot | trained head |
+|---|---|---|
+| held-out agreement with the teacher (1,104 states) | 63.1% | 84.3% |
+| new cells, 10 paired 2,400-step MAP01 episodes | 58.1 | 53.8 (−4.3 ± 18.2; 5 seeds up, 5 down) |
+| kills | 5.9 | 6.5 |
+| deaths | 0/10 | 0/10 |
+
+It copies the teacher well but plays no better, which is what you'd expect
+from a teacher built out of this system's own nets: they were already
+producing those actions. stuntd's Snake demo worked because its teacher (a
+BFS oracle) knew things the model didn't.
+
+So a second head got a map-aware teacher: `--frontier-hint` adds a
+`FRONTIER <direction> <distance>` line pointing toward the frontier
+planner's next waypoint, and the teacher then includes the planner's own
+moves and turns, which that line explains (9,846 states from six
+2,400-step runs on seed 6100). Both arms of its A/B read the line:
+
+| | zero-shot + line | map-aware head + line |
+|---|---|---|
+| held-out agreement with the teacher (1,478 states) | 55.3% | 81.3% |
+| new cells | 53.4 | 56.0 (+2.6 ± 14.9) |
+| deaths | 3/10 | 0/10 |
+| share of actions that were Laya's own | 0.51 | 0.65 |
+
+Not an accept by the harness's rule (the coverage gain is inside the
+noise), but against the default configuration (plain planner, no line:
+58.1 cells, 0 deaths, 0.55 Laya share) it plays about as well with Laya
+authoring ~65% of actions. The line on its own hurts zero-shot Laya
+(58.1 → 53.4 cells, 0 → 3 deaths), so it's only worth enabling with a head
+trained on it.
+
+Combined with door-first v2 (which gets through doors but died in 6/10
+episodes zero-shot), each against the untouched default:
+
+| | default | door-first v2 | + map-aware head | + head retrained on door-first play |
+|---|---|---|---|---|
+| new cells | 58.1 | 55.5 | 55.8 | 53.0 |
+| deaths | 0/10 | 6/10 | 2/10 | 2/10 |
+| Laya's share of actions | 0.55 | 0.60 | 0.69 | 0.69 |
+
+The head cuts door-first's deaths from 6 to 2 and has Laya authoring the
+most play of any configuration, but neither combination beats the default
+on coverage. Retraining the head on door-first play (16,158 states, the
+last 30 steps before each death left out) didn't add anything.
+
 ## Installation
 
 Requires Python 3.11+. On Apple Silicon, use Python **3.11** specifically
@@ -234,6 +317,7 @@ All exposed as CLI flags on `experiments/run.py` and `experiments/compare.py`:
 | `--no-stuck-recovery` / `--no-threat-response` | Two controller-level safety nets in `controller.py` — see that module for what each does. |
 | `--no-shoot-gate` | Use the original single-`choice`-call design (combat competes directly against move/turn) instead of the default `noul` shoot gate + `AMMO>0`/bearing guards — see [How the decision engine works](#how-the-decision-engine-works). |
 | `--shoot-gate-threshold F` | `P(should_shoot)` cutoff for the gate (default **0.45**). |
+| `--direction-mode {model,resolved}` | `resolved`: Laya chooses only the action *type* (`strafe`, `turn_small`, `turn_large`, …) and code picks left/right from perception — nearest off-center enemy, then pickup, then the only open side, else the last side used. See [Known quirks](#known-quirks) for why Laya's own left/right choice isn't usable. |
 | `--no-turn-loop-recovery` | Disable the safety net that forces a `move_forward` attempt after too many consecutive executed turns (`controller.TurnLoopRecoveryConfig`). |
 | `--no-threat-engagement` | Disable the safety net that turns toward a visible, near-enough, off-center enemy instead of letting Laya's movement choice stand (`controller.ThreatEngagementConfig`). |
 | `--no-low-health-retreat` / `--low-health-threshold N` / `--emergency-health-threshold N` | Disable/tune the safety net that retreats (or, below the emergency threshold, overrides even an attack) when a visible enemy is present and health is low (`controller.LowHealthRetreatConfig`). |
@@ -242,6 +326,8 @@ All exposed as CLI flags on `experiments/run.py` and `experiments/compare.py`:
 | `--no-door-use` / `--door-use-stall-threshold N` | Disable/tune the safety net that tries `use` once `WALL ahead near` has held for N consecutive steps (`controller.DoorUseConfig`) — Laya's own movement choice almost never picks `use` on its own. |
 | `--no-secret-search` | Disable the systematic turn-and-use sequence that engages once frontier exploration has stopped finding new territory (`controller.SecretSearchConfig`). |
 | `--no-wall-follow` / `--wall-follow-hand {left,right}` | Disable/pick the hand for the classic maze wall-following fallback (`controller.WallFollowConfig`), which engages once nudging and a secret-door sweep have both failed. |
+| `--no-frontier-planner` | Disable the frontier planner (`laya_doom/planner.py`, on by default): when circling is detected it travels along moves already made to the nearest untried edge of explored space, faces it squarely, pushes forward, and presses `use` once if blocked. See [Frontier planner](#frontier-planner). |
+| `--door-first` | The planner tries frontiers facing a door-shaped sector (thin, 8–24 units deep, two passable sides) before plain walls. Reads ViZDoom's level geometry once per episode — map knowledge the rest of the pipeline doesn't have; `--scenario level` only. v1 lost its A/B (new cells 58.1 → 46.5: a second `use` shut the doors it had opened). v2 lines up on the doorway, presses each door once per 40 steps and retries once: cells 55.5 (−2.6 ± 24.1) but deaths 0 → 6 of 10, because it reaches monster-filled rooms sooner. Off by default; see `planner.py`. |
 | `--window-scale {1,2,3}` | Doom window size with `--render`: 1=320×240, 2=640×480, 3=1024×768. Purely a display size; behaviour is unaffected. |
 
 ## Why there's no system prompt
@@ -265,7 +351,7 @@ just this wrapper's own per-episode state.
 ## Testing
 
 ```bash
-pytest              # 140 tests, pure logic — no vizdoom process needed, and
+pytest              # 167 tests, pure logic — no vizdoom process needed, and
                      # no real Laya model loaded (LayaAgent's own tests fake
                      # out laya.load() to test its label->action mapping,
                      # the shoot gate's AMMO/bearing guards, confidence
@@ -295,6 +381,7 @@ laya-doom/
         laya_agent.py          laya.Agent wrapper, predict()-based, no tool schema
         actions.py             semantic action vocabulary <-> button tables
         wayfinding.py            ANGLE-based frontier/heading helpers
+        planner.py               frontier planner over the agent's own experience map
         controller.py          the explicit per-tic run_episode() loop
         metrics.py              JSONL logging + summary stats
         dashboard.py             live terminal view
@@ -302,9 +389,11 @@ laya-doom/
         random_agent.py, heuristic_agent.py   baselines, ported unchanged
         run.py                  single-controller CLI
         compare.py               multi-controller comparison CLI
+        autoresearch.py          paired baseline-vs-candidate hypothesis rounds (MAP01)
     scripts/
         setup.sh                 automated venv + install
         probe_criteria.py        criteria-wording/shoot-gate probes against the real model
+        probe_direction_bias.py  label-order vs. state test for Laya's left/right choices
         verify_angle.py,         ANGLE sign-convention verification
         verify_angle_movement.py
         probe_automap.py         automap-buffer capture + analysis
@@ -365,6 +454,39 @@ Not built:
 - **Browser dashboard, multi-agent, multi-map progression.**
 
 ## Known quirks
+
+- **Laya's left/right choice is label-order bias, not a judgment.** Across
+  ~21,000 logged `--scenario level` movement proposals it chose
+  `strafe_right` 5 times and `turn_right_*` never, against 3,328
+  `strafe_left`. `scripts/probe_direction_bias.py` shows why: reversing the
+  criteria order flips the winner to `strafe_right` (48/60 states), while
+  mirroring left↔right in the *state* text produces no right-side choices
+  at all, and with order balanced the state-vs-mirror difference is noise
+  (+0.03 ± 0.16). Between two near-identical labels, the one listed first
+  wins. `--direction-mode resolved` stops asking Laya for the direction. A
+  paired 10-episode, 1,200-step MAP01 run (`autoresearch run
+  direction_resolved`) found no coverage change (new cells +0.9 ± 7.5,
+  completion 0/10 both, 1 death each) but a consistent rise in the share
+  of actions that were Laya's own, not a safety-net override (0.55 → 0.72,
+  higher on all 10 seeds). It isn't the default yet.
+- **MAP01's first exploration ceiling is one door.** On most seeds the
+  agent explores ~26 cells: everything reachable before the door at
+  x=736. It reaches that door rarely (17 of 1,200 steps on seed 5000) and
+  presses `use` at whatever angle it's facing; at 33° the 64-unit use ray
+  hits the frame. A replay aimed at 0° walks through.
+  `DoorUseConfig(aim=True)` squares up before pressing, but lost on a
+  paired 10-episode run (new cells −5.3 ± 8.6) because it costs time at
+  every plain wall, so it's off by default. The frontier planner (below)
+  is what gets through it.
+- **ViZDoom's sector floor/ceiling heights are wrong.** On MAP01 it reports
+  the central hall as floor = ceiling = 64 and the start corridor with the
+  ceiling *below* the floor, and the values never change as doors move.
+  Line segment positions are accurate (they matched the game exactly), so
+  door detection uses sector *shape*, not height.
+- **Much of the play on a real level is the safety nets, not Laya.**
+  `override_rate` (in every run summary and the compare table) reports the
+  share of executed actions a controller net overrode — 7–45% on the
+  longer logged `level` runs.
 
 - Laya's `confidence` field is described as "calibrated" via ECE
   (expected calibration error) numbers on its own benchmark tasks

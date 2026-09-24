@@ -252,11 +252,14 @@ def perceive(state, config: PerceptionConfig | None = None) -> Perception | None
             config.distance_bucket(raw_depth) if raw_depth is not None else ("medium", 0.0)
         )
 
-        if role == "enemy" and len(enemies) < config.max_enemies:
+        if role == "enemy":
             enemies.append(EnemyPercept(kind=kind, bearing=bearing, distance=distance, raw_distance_units=game_units))
-        elif role == "pickup" and len(pickups) < config.max_pickups:
+        else:
             pickups.append(PickupPercept(kind=kind, bearing=bearing, distance=distance, raw_distance_units=game_units))
 
+    # Sort BEFORE truncating to max_enemies/max_pickups: labels arrive in
+    # ViZDoom's own order, not by distance, so capping first could drop the
+    # nearest (most dangerous) enemy whenever more than max_enemies are visible.
     enemies.sort(key=lambda e: e.raw_distance_units)
     pickups.sort(key=lambda p: p.raw_distance_units)
 

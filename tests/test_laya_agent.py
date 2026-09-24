@@ -8,17 +8,23 @@ gating on the movement fallback, and Decision field population.
 Doesn't load the real model: laya.load() downloads ~800MB of weights and
 runs on real torch/MPS, so it's faked out here — this tests LayaAgent's
 own bookkeeping in isolation, not Laya's actual Doom-playing behaviour
-(that's what experiments/compare.py,
-scripts/probe_criteria.py and the README's "Verified behaviour" section
-are for).
+(that's what experiments/compare.py, scripts/probe_criteria.py and
+scripts/probe_direction_bias.py are for).
 """
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from laya_doom.laya_agent import QUESTION_ID, LayaAgent, build_criteria, build_movement_criteria
-from laya_doom.perception import EnemyPercept, Perception
+from laya_doom.laya_agent import (
+    QUESTION_ID,
+    LayaAgent,
+    build_criteria,
+    build_movement_criteria,
+    collapse_directions,
+    resolve_direction,
+)
+from laya_doom.perception import EnemyPercept, Perception, PickupPercept
 
 DEFAULT_MOVE_RESPONSE = {
     "answers": {
@@ -307,3 +313,84 @@ def test_reset_is_a_no_op_and_does_not_raise():
     # Calling decide() again afterward still works — no state to have broken.
     decision = agent.decide(_perception(), "HEALTH 100")
     assert decision.action == "move_forward"
+
+
+# --- direction_mode="resolved" -------------------------------------------
+
+
+def _collapsed_move_response(label: str) -> dict:
+    return {"answers": {QUESTION_ID: {"choice": label, "probabilities": {label: 0.5}, "confidence": 0.5}}}
+
+
+def test_collapse_directions_merges_each_left_right_pair_in_order():
+    collapsed = collapse_directions(build_movement_criteria("full"))
+    assert list(collapsed) == ["move_forward", "move_backward", "strafe", "turn_small", "turn_large", "use", "wait"]
+    assert list(collapse_directions(build_movement_criteria("stage1"))) == ["move_forward", "turn"]
+
+
+def test_resolved_mode_offers_only_direction_free_labels():
+    agent, fake = _make_agent(responses=[NO_SHOOT_GATE_RESPONSE, _collapsed_move_response("turn")], direction_mode="resolved")
+    agent.decide(_perception(), "HEALTH 100")
+    _, move_questions = fake.predict_calls[1]
+    assert set(move_questions[QUESTION_ID]["criteria"]) == {"move_forward", "turn"}
+
+
+def test_resolved_mode_turns_toward_an_off_center_enemy():
+    agent, _ = _make_agent(responses=[_gate_response(0.1), _collapsed_move_response("turn")], direction_mode="resolved")
+    enemy_right = _perception(enemies=(EnemyPercept("imp", "right", "near", 150.0),))
+    decision = agent.decide(enemy_right, "HEALTH 100")
+    assert decision.action == "turn_right"
+    assert "turn -> turn_right (enemy)" in decision.reasoning
+
+
+def test_resolved_mode_prefers_the_only_open_side_without_a_target():
+    agent, _ = _make_agent(responses=[NO_SHOOT_GATE_RESPONSE, _collapsed_move_response("turn")], direction_mode="resolved")
+    decision = agent.decide(_perception(open_left=True, open_right=False), "HEALTH 100")
+    assert decision.action == "turn_left"
+
+
+def test_resolved_mode_keeps_the_last_side_on_a_tie():
+    agent, _ = _make_agent(responses=[NO_SHOOT_GATE_RESPONSE, _collapsed_move_response("turn")], direction_mode="resolved")
+    agent.decide(_perception(open_left=True, open_right=False), "HEALTH 100")  # -> left
+    decision = agent.decide(_perception(open_left=True, open_right=True), "HEALTH 100")
+    assert decision.action == "turn_left"
+    assert "(sticky)" in decision.reasoning
+
+
+def test_resolved_mode_leaves_non_directional_labels_alone():
+    agent, _ = _make_agent(responses=[NO_SHOOT_GATE_RESPONSE, DEFAULT_MOVE_RESPONSE], direction_mode="resolved")
+    assert agent.decide(_perception(), "HEALTH 100").action == "move_forward"
+
+
+def test_resolve_direction_enemy_outranks_pickup():
+    perc = _perception(
+        enemies=(EnemyPercept("imp", "far-left", "far", 900.0),),
+        pickups=(PickupPercept("ammo", "right", "near", 100.0),),
+    )
+    assert resolve_direction(perc, "right") == ("left", "enemy")
+
+
+
+# --- movement_head (stuntd-trained head) ------------------------------------
+
+
+def test_movement_head_answers_the_movement_question_and_the_gate_stays_zero_shot():
+    from types import SimpleNamespace
+
+    agent, fake = _make_agent(responses=[NO_SHOOT_GATE_RESPONSE])
+    labels = ("move_forward", "turn_left", "turn_right")
+    calls = []
+
+    class _FakeDecider:
+        def decide(self, model, head_path, text):
+            calls.append(text)
+            return SimpleNamespace(label=2, confidence=0.9, probabilities=(0.05, 0.05, 0.9))
+
+    agent._head_decider = _FakeDecider()
+    agent._head_model = SimpleNamespace(field="action", labels=labels, temperature=1.0)
+    agent._head_path = "head.safetensors"
+    decision = agent.decide(_perception(), "HEALTH 100")
+    assert decision.action == "turn_right" and decision.confidence == 0.9
+    assert calls == ["HEALTH 100"]
+    assert len(fake.predict_calls) == 1  # only the zero-shot gate went to the base model
+    assert "turn_right:0.900" in decision.reasoning

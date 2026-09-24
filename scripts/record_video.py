@@ -8,8 +8,7 @@ tic duration, so playback speed matches real gameplay.
 
 Why not a real screen recording: macOS's Screen Recording TCC permission
 blocks `screencapture`/`CGWindowListCreateImage` for this session with no
-override available (confirmed separately, not assumed) — see the README's
-recording-tooling section. This sidesteps that entirely by reading
+override available (confirmed separately, not assumed). This sidesteps that entirely by reading
 ViZDoom's own internal screen_buffer array (works headless, no window or
 OS capture permission needed at all) instead of capturing the display, and
 synthesizes the "terminal output" half by rendering the exact same
@@ -147,6 +146,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--confidence-threshold", type=float, default=0.15)
     p.add_argument("--no-shoot-gate", action="store_true")
     p.add_argument("--shoot-gate-threshold", type=float, default=0.45)
+    p.add_argument("--direction-mode", choices=["model", "resolved"], default="model")
     p.add_argument("--window-scale", type=int, choices=[1, 2, 3], default=2)
     p.add_argument("--wall-follow-hand", choices=["left", "right"], default="right")
     p.add_argument("--seed", type=int, default=None)
@@ -179,6 +179,7 @@ def main(argv=None) -> int:
         confidence_threshold=args.confidence_threshold,
         use_shoot_gate=not args.no_shoot_gate,
         shoot_gate_threshold=args.shoot_gate_threshold,
+        direction_mode=args.direction_mode,
     )
     encoder = StateEncoder(EncoderConfig(memory_mode="prev_state"))
     perception_config = PerceptionConfig()

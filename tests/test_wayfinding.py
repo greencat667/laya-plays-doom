@@ -4,8 +4,8 @@ from laya_doom import wayfinding
 
 
 def test_heading_unit_vector_matches_verified_axes():
-    # Real, verified convention (see wayfinding.py's module docstring and
-    # the README's ANGLE-verification section): angle=0 -> +x, angle=90 ->
+    # Real, verified convention (see wayfinding.py's module docstring):
+    # angle=0 -> +x, angle=90 ->
     # +y, matching real POSITION_X/Y deltas measured against a real DoomEnv.
     dx, dy = wayfinding.heading_unit_vector(0.0)
     assert dx == 1.0 and abs(dy) < 1e-9
@@ -117,3 +117,10 @@ def test_turn_action_for_heading_handles_wraparound():
     assert wayfinding.turn_action_for_heading(350.0, 20.0, "stage1") == "turn_left"
     # current=10, target=340 -> shortest path is -30, i.e. turn_right.
     assert wayfinding.turn_action_for_heading(10.0, 340.0, "stage1") == "turn_right"
+
+
+def test_fine_turn_action_scales_with_the_remaining_error():
+    assert wayfinding.fine_turn_action(33.0, 0.0, "full") == "turn_right"
+    assert wayfinding.fine_turn_action(8.0, 0.0, "full") == "turn_right_small"
+    assert wayfinding.fine_turn_action(300.0, 0.0, "full") == "turn_left_large"
+    assert wayfinding.fine_turn_action(8.0, 0.0, "stage1") == "turn_right"
