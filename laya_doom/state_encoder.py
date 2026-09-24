@@ -62,6 +62,12 @@ class EncoderConfig:
     # for why "behind" specifically). Only meaningful in prev_state/rolling
     # (needs a previous HEALTH to compare against).
     include_threat_hint: bool = True
+    # A "FRONTIER <direction> <distance>" line pointing toward the frontier
+    # planner's next waypoint (planner.FrontierPlanner.hint) -- map knowledge
+    # the rest of the text lacks, so a trained head (scripts/
+    # distill_movement_head.py) can learn the planner's choices. Off by
+    # default: it changes what zero-shot Laya reads.
+    include_frontier_hint: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,6 +155,7 @@ class StateEncoder:
         last_action: str | None,
         last_result: str | None,
         keys_held: frozenset[str] = frozenset(),
+        frontier_hint: str | None = None,
     ) -> str:
         lines: list[str] = []
         if self.config.include_goal_line:
@@ -180,6 +187,9 @@ class StateEncoder:
             self.last_area_new = cell not in self._visited_cells
             lines.append(f"AREA {'new' if self.last_area_new else 'revisited'}")
             self._visited_cells.add(cell)
+
+        if self.config.include_frontier_hint and frontier_hint:
+            lines.append(frontier_hint)
 
         if self.config.memory_mode in ("prev_state", "rolling") and last_action is not None:
             lines.append(f"LAST_ACTION {last_action}")

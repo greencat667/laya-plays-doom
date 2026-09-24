@@ -27,6 +27,7 @@ from laya_doom.controller import (
 from laya_doom.doom_env import WINDOW_SCALE_RESOLUTIONS, DoomEnv, DoomEnvConfig
 from laya_doom.metrics import MetricsLogger, load_jsonl, summarize_episodes
 from laya_doom.perception import PerceptionConfig
+from laya_doom.planner import FrontierPlannerConfig
 from laya_doom.state_encoder import EncoderConfig, StateEncoder
 
 from .heuristic_agent import HeuristicAgent
@@ -62,31 +63,13 @@ def _build_agent(args: argparse.Namespace):
             confidence_threshold=args.confidence_threshold,
             use_shoot_gate=not args.no_shoot_gate,
             shoot_gate_threshold=args.shoot_gate_threshold,
+            direction_mode=args.direction_mode,
         )
     raise ValueError(f"unknown controller: {args.controller}")
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run N episodes of one laya-doom controller.")
-    p.add_argument("--controller", choices=["random", "heuristic", "laya"], required=True)
-    p.add_argument("--episodes", type=int, default=10)
-    p.add_argument("--scenario", default="basic", help='"basic", "my_way_home", or "level" for a real Freedoom map')
-    p.add_argument("--doom-map", default=None, help='map name for --scenario level (default "MAP01")')
-    p.add_argument(
-        "--action-set",
-        choices=["stage1", "full"],
-        default=None,
-        help='default: "full" for --scenario level (needs use() for doors), "stage1" otherwise',
-    )
-    p.add_argument(
-        "--decision-tics",
-        type=int,
-        default=None,
-        help="uniform tic count per action, overriding per-action defaults — the control-frequency knob",
-    )
-    p.add_argument("--memory", default="prev_state", help="stateless|prev_state|rolling (or 0/1/2)")
-    p.add_argument("--rolling-window", type=int, default=3)
-    p.add_argument("--no-goal-line", action="store_true", help="omit the GOAL line from the encoded state")
+def add_laya_args(p: argparse.ArgumentParser) -> None:
+    """LayaAgent flags, shared with experiments/compare.py."""
     p.add_argument(
         "--confidence-mode", choices=["always_execute", "confidence_threshold"], default="always_execute"
     )
@@ -122,7 +105,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="P(should_shoot) cutoff for the shoot gate — picked from a real 8-state spread (see "
         "laya_agent.py), not a calibrated cutoff; only applies when the gate is enabled",
     )
-    p.add_argument("--max-steps", type=int, default=500)
+    p.add_argument(
+        "--direction-mode",
+        choices=["model", "resolved"],
+        default="model",
+        help='"resolved": Laya picks only the action type (strafe/turn_small/...) and code picks left/right '
+        "from perception -- the model's own left/right choice is label-order bias (see "
+        "scripts/probe_direction_bias.py and laya_agent.resolve_direction)",
+    )
+
+
+def add_safety_net_args(p: argparse.ArgumentParser) -> None:
+    """controller.py safety-net flags, shared with experiments/compare.py."""
     p.add_argument(
         "--no-stuck-recovery",
         action="store_true",
@@ -182,8 +176,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="make exploration-nudge's forced heading change blind again (the old open_left/open_right/alternate "
         "guess) instead of the default directed guess toward the nearest known-unvisited grid cell, computed "
-        "from the now-verified ANGLE game variable (see controller.FrontierExplorationConfig / wayfinding.py "
-        "and the README's ANGLE-verification section) — for regression/comparison",
+        "from the now-verified ANGLE game variable (see controller.FrontierExplorationConfig / wayfinding.py) "
+        "— for regression/comparison",
     )
     p.add_argument(
         "--frontier-lookahead-cells",
@@ -221,6 +215,76 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "nudging and a full secret-door sweep have both come up empty (see controller.WallFollowConfig)",
     )
     p.add_argument("--wall-follow-hand", choices=["left", "right"], default="right")
+    p.add_argument(
+        "--no-frontier-planner",
+        action="store_true",
+        help="disable the planner that, when circling, travels to the nearest untried edge of explored space "
+        "and pushes/uses through it (laya_doom/planner.py)",
+    )
+    p.add_argument(
+        "--door-first",
+        action="store_true",
+        help="planner tries frontiers facing door-shaped sectors first (reads ViZDoom level geometry; "
+        "--scenario level only)",
+    )
+
+
+def safety_nets_from_args(args: argparse.Namespace) -> dict:
+    """The safety-net configs as run_episode() keyword arguments."""
+    return {
+        "stuck_recovery": StuckRecoveryConfig(enabled=not args.no_stuck_recovery),
+        "threat_response": ThreatResponseConfig(enabled=not args.no_threat_response),
+        "turn_loop_recovery": TurnLoopRecoveryConfig(enabled=not args.no_turn_loop_recovery),
+        "threat_engagement": ThreatEngagementConfig(enabled=not args.no_threat_engagement),
+        "low_health_retreat": LowHealthRetreatConfig(
+            enabled=not args.no_low_health_retreat,
+            health_threshold=args.low_health_threshold,
+            emergency_health_threshold=args.emergency_health_threshold,
+        ),
+        "exploration_nudge": ExplorationNudgeConfig(
+            enabled=not args.no_exploration_nudge, streak_threshold=args.exploration_streak_threshold
+        ),
+        "frontier_exploration": FrontierExplorationConfig(
+            enabled=not args.no_frontier_exploration, lookahead_cells=args.frontier_lookahead_cells
+        ),
+        "door_use": DoorUseConfig(enabled=not args.no_door_use, stall_threshold=args.door_use_stall_threshold),
+        "secret_search": SecretSearchConfig(enabled=not args.no_secret_search),
+        "wall_follow": WallFollowConfig(enabled=not args.no_wall_follow, hand=args.wall_follow_hand),
+        "frontier_planner": FrontierPlannerConfig(
+            enabled=not args.no_frontier_planner, door_first=args.door_first
+        ),
+    }
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Run N episodes of one laya-doom controller.")
+    p.add_argument("--controller", choices=["random", "heuristic", "laya"], required=True)
+    p.add_argument("--episodes", type=int, default=10)
+    p.add_argument("--scenario", default="basic", help='"basic", "my_way_home", or "level" for a real Freedoom map')
+    p.add_argument("--doom-map", default=None, help='map name for --scenario level (default "MAP01")')
+    p.add_argument(
+        "--action-set",
+        choices=["stage1", "full"],
+        default=None,
+        help='default: "full" for --scenario level (needs use() for doors), "stage1" otherwise',
+    )
+    p.add_argument(
+        "--decision-tics",
+        type=int,
+        default=None,
+        help="uniform tic count per action, overriding per-action defaults — the control-frequency knob",
+    )
+    p.add_argument("--memory", default="prev_state", help="stateless|prev_state|rolling (or 0/1/2)")
+    p.add_argument("--rolling-window", type=int, default=3)
+    p.add_argument("--no-goal-line", action="store_true", help="omit the GOAL line from the encoded state")
+    p.add_argument(
+        "--frontier-hint",
+        action="store_true",
+        help="add a FRONTIER <direction> <distance> line pointing toward the frontier planner's next waypoint",
+    )
+    p.add_argument("--max-steps", type=int, default=500)
+    add_laya_args(p)
+    add_safety_net_args(p)
     p.add_argument("--render", action="store_true", help="open a visible Doom window")
     p.add_argument(
         "--window-scale",
@@ -258,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             uniform_tics=args.decision_tics,
             seed=args.seed,
             doom_map=args.doom_map,
+            sectors_info_enabled=args.door_first,
             screen_resolution=WINDOW_SCALE_RESOLUTIONS[args.window_scale],
         )
     )
@@ -267,27 +332,11 @@ def main(argv: list[str] | None = None) -> int:
             memory_mode=memory_mode,
             rolling_window=args.rolling_window,
             include_goal_line=not args.no_goal_line,
+            include_frontier_hint=args.frontier_hint,
         )
     )
     perception_config = PerceptionConfig()
-    stuck_recovery = StuckRecoveryConfig(enabled=not args.no_stuck_recovery)
-    threat_response = ThreatResponseConfig(enabled=not args.no_threat_response)
-    turn_loop_recovery = TurnLoopRecoveryConfig(enabled=not args.no_turn_loop_recovery)
-    threat_engagement = ThreatEngagementConfig(enabled=not args.no_threat_engagement)
-    low_health_retreat = LowHealthRetreatConfig(
-        enabled=not args.no_low_health_retreat,
-        health_threshold=args.low_health_threshold,
-        emergency_health_threshold=args.emergency_health_threshold,
-    )
-    exploration_nudge = ExplorationNudgeConfig(
-        enabled=not args.no_exploration_nudge, streak_threshold=args.exploration_streak_threshold
-    )
-    frontier_exploration = FrontierExplorationConfig(
-        enabled=not args.no_frontier_exploration, lookahead_cells=args.frontier_lookahead_cells
-    )
-    door_use = DoorUseConfig(enabled=not args.no_door_use, stall_threshold=args.door_use_stall_threshold)
-    secret_search = SecretSearchConfig(enabled=not args.no_secret_search)
-    wall_follow = WallFollowConfig(enabled=not args.no_wall_follow, hand=args.wall_follow_hand)
+    safety_nets = safety_nets_from_args(args)
 
     dashboard = None
     if args.dashboard:
@@ -315,16 +364,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_steps=args.max_steps,
                 episode_index=ep,
                 on_step=on_step,
-                stuck_recovery=stuck_recovery,
-                threat_response=threat_response,
-                turn_loop_recovery=turn_loop_recovery,
-                threat_engagement=threat_engagement,
-                low_health_retreat=low_health_retreat,
-                exploration_nudge=exploration_nudge,
-                door_use=door_use,
-                frontier_exploration=frontier_exploration,
-                secret_search=secret_search,
-                wall_follow=wall_follow,
+                **safety_nets,
             )
             logger.log_episode(result)
             if dashboard is not None:

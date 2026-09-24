@@ -120,6 +120,17 @@ def test_perceive_respects_max_enemies():
     assert len(perc.enemies) == 2
 
 
+def test_max_enemies_keeps_the_nearest_not_the_first_listed():
+    depth = make_depth_buffer(fill=200)
+    labels = [make_label("Imp", x=i * 40, y=100, width=20, height=40) for i in range(5)]
+    depth[100:140, 160:180] = 5  # only the LAST-listed imp (x=160) is close
+    state = make_state(labels=labels, depth_buffer=depth)
+    perc = p.perceive(state, p.PerceptionConfig(max_enemies=2))
+    assert len(perc.enemies) == 2
+    assert perc.enemies[0].distance == "very-near"
+    assert perc.enemies[0].bearing == "front"
+
+
 def test_wall_scan_detects_close_wall_ahead():
     depth = make_depth_buffer(width=320, height=240, fill=5)  # everything very close
     state = make_state(depth_buffer=depth)

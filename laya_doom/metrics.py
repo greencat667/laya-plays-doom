@@ -51,6 +51,14 @@ def load_jsonl(path: str | Path) -> list[dict]:
     return rows
 
 
+def _override_rate(episode_rows: list[dict]) -> float | None:
+    """Share of all executed steps that a controller safety net overrode.
+    None for logs written before EpisodeResult.overridden_steps existed."""
+    rows = [r for r in episode_rows if "overridden_steps" in r]
+    steps = sum(r.get("steps") or 0 for r in rows)
+    return sum(r["overridden_steps"] for r in rows) / steps if steps else None
+
+
 def summarize_episodes(episode_rows: list[dict]) -> dict:
     """Aggregate stats across a list of episode-row dicts (as produced by
     MetricsLogger.log_episode / load_jsonl), used by experiments/compare.py
@@ -83,6 +91,7 @@ def summarize_episodes(episode_rows: list[dict]) -> dict:
         "mean_total_reward": avg("total_reward"),
         "death_rate": sum(1 for r in episode_rows if r.get("died")) / n,
         "completion_rate": sum(1 for r in episode_rows if r.get("completed")) / n,
+        "override_rate": _override_rate(episode_rows),
         "mean_confidence": avg("mean_confidence"),
         "mean_latency_ms": avg("mean_latency_ms"),
         "action_distribution": action_totals,

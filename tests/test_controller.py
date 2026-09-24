@@ -10,6 +10,10 @@ from laya_doom.controller import (
     ThreatResponseConfig,
     TurnLoopRecoveryConfig,
     WallFollowConfig,
+    DoorUseConfig,
+    DoorUseState,
+    _door_targets,
+    _door_use_step,
     _engagement_turn,
     _exploration_turn,
     _nearest_off_center_threat,
@@ -416,8 +420,7 @@ class _FakeMoveStrafeAgent:
 
 def test_wall_hugging_regression_escapes_a_symmetric_stuck_corner(monkeypatch):
     """Regression test for the real bug found by watching a fresh
-    --scenario level run with override_reason logging (see the README's
-    "Real bug: wall-hugging" section for the exact data): at one fixed
+    --scenario level run with override_reason logging: at one fixed
     (x, y), open_left/open_right kept reporting the same tied value, so
     _recovery_turn's old step-parity tie-break alternated turn_right_large
     /turn_left_large every step forever (net rotation always ~0) — and
@@ -932,3 +935,53 @@ def test_wall_follow_regression_engages_after_secret_search_and_nudging_both_fai
     )
     reasons = [r.override_reason for r in records]
     assert "wall_follow" in reasons
+
+
+# --- aimed door use (DoorUseConfig.aim) ------------------------------------
+
+
+def test_door_targets_nearest_cardinal_first():
+    assert _door_targets(make_perception(angle=33.0), 128.0, set()) == (0.0,)
+    assert _door_targets(make_perception(angle=350.0), 128.0, set(), limit=2) == (0.0, 270.0)
+
+
+def test_door_targets_skip_headings_that_already_failed_here():
+    perc = make_perception(x=64.0, y=64.0, angle=10.0)
+    assert _door_targets(perc, 128.0, {((0, 0), 0.0)}) == (90.0,)
+    tried = {((0, 0), h) for h in (0.0, 90.0, 180.0, 270.0)}
+    assert _door_targets(perc, 128.0, tried) == ()
+
+
+def test_door_use_aims_then_uses_then_walks_through_once_open():
+    config = DoorUseConfig(aim=True)
+    state = DoorUseState((0.0, 90.0))
+    action, state, _ = _door_use_step(make_perception(angle=33.0, wall_near=True), state, config, "full")
+    assert action == "turn_right" and state.phase == "aim"
+    action, state, _ = _door_use_step(make_perception(angle=2.0, wall_near=True), state, config, "full")
+    assert action == "use" and state.phase == "wait_open"
+    action, state, _ = _door_use_step(make_perception(angle=2.0, wall_near=True), state, config, "full")
+    assert action == "wait"
+    action, state, failed = _door_use_step(make_perception(angle=2.0, wall_near=False), state, config, "full")
+    assert action == "move_forward" and state.phase == "walk" and failed is None
+
+
+def test_door_use_tries_the_second_heading_then_gives_up():
+    config = DoorUseConfig(aim=True, open_wait_steps=2)
+    blocked = make_perception(angle=0.0, wall_near=True)
+    state = DoorUseState((0.0, 90.0), phase="wait_open", counter=1)
+    action, state, failed = _door_use_step(blocked, state, config, "full")
+    assert action == "turn_left_large" and state.index == 1 and failed == 0.0  # 0 -> 90 degrees
+    last = DoorUseState((0.0, 90.0), 1, "wait_open", 1)
+    assert _door_use_step(blocked, last, config, "full") == (None, None, 90.0)
+
+
+def test_door_use_presses_anyway_after_max_aim_steps():
+    config = DoorUseConfig(aim=True, max_aim_steps=3)
+    state = DoorUseState((0.0,), counter=3)
+    assert _door_use_step(make_perception(angle=30.0, wall_near=True), state, config, "full")[0] == "use"
+
+
+def test_door_use_ends_if_squaring_up_leaves_no_wall_ahead():
+    config = DoorUseConfig(aim=True)
+    state = DoorUseState((0.0,))
+    assert _door_use_step(make_perception(angle=1.0, wall_near=False), state, config, "full") == (None, None, None)

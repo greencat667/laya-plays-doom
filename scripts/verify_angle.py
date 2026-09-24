@@ -1,7 +1,6 @@
 """Empirically verify ViZDoom's ANGLE game-variable sign convention before
 trusting it for anything (see laya_doom/wayfinding.py's module docstring
-and the README's "Verified: ANGLE's real sign convention" section for how
-the printed output below is used).
+for how the printed output below is used).
 
 Starts a real headless DoomEnv (``basic`` scenario, so turning is
 unobstructed), reads ANGLE before/after executing several real

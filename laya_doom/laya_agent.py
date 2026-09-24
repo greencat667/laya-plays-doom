@@ -28,8 +28,11 @@ since that is the only text Laya actually reads.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 
 import laya
@@ -144,6 +147,35 @@ _SHOOT_GATE_INSTRUCTIONS = (
 _SHOOT_GATE_THRESHOLD = 0.45
 
 
+# Direction-free labels for direction_mode="resolved" (see LayaAgent).
+# Measured with the real model (scripts/probe_direction_bias.py): across
+# ~21,000 logged --scenario level proposals Laya chose strafe_right 5 times
+# and turn_right_* 0 times, vs 3,328 strafe_left. Reversing the criteria
+# dict's order flips it to strafe_right 48/60, while mirroring left<->right
+# in the STATE text changes nothing — whichever of two near-identical labels
+# is listed first wins. With order balanced there's still no usable
+# directional signal (mirroring the state shifts P(left)-P(right) by
+# +0.03 +/- 0.16), so the direction of a Laya-chosen turn/strafe is noise.
+# "resolved" asks Laya only for the action TYPE and picks the side in code.
+DirectionMode = Literal["model", "resolved"]
+
+_DIRECTIONAL_LABELS: dict[str, tuple[str, str]] = {
+    # collapsed label -> (left action, right action)
+    "turn": ("turn_left", "turn_right"),
+    "turn_small": ("turn_left_small", "turn_right_small"),
+    "turn_large": ("turn_left_large", "turn_right_large"),
+    "strafe": ("strafe_left", "strafe_right"),
+}
+_COLLAPSED_CRITERIA: dict[str, str] = {
+    "turn": "the path ahead is blocked or a wall is near, or to face an enemy that isn't directly ahead",
+    "turn_small": "a small turn to fine-aim at an enemy that isn't directly ahead",
+    "turn_large": "a large turn, e.g. when the path ahead is blocked or a wall is near, to scan for a new direction",
+    "strafe": "sidestep without turning, to dodge or reposition without losing aim",
+}
+_LEFT_BEARINGS = frozenset({"far-left", "left", "front-left"})
+_RIGHT_BEARINGS = frozenset({"front-right", "right", "far-right"})
+
+
 def build_criteria(action_set: ActionSet) -> dict[str, str]:
     """Build the label -> criteria-description dict for a ``choice``
     question, covering exactly the canonical action names for this action
@@ -158,6 +190,39 @@ def build_movement_criteria(action_set: ActionSet) -> dict[str, str]:
     rather than left in to compete and lose again."""
     combat = _COMBAT_ACTION[action_set]
     return {name: desc for name, desc in build_criteria(action_set).items() if name != combat}
+
+
+def collapse_directions(criteria: dict[str, str]) -> dict[str, str]:
+    """Replace each left/right pair in ``criteria`` with one direction-free
+    label (see _DIRECTIONAL_LABELS), keeping the original label order."""
+    to_collapsed = {side: label for label, pair in _DIRECTIONAL_LABELS.items() for side in pair}
+    collapsed: dict[str, str] = {}
+    for name, desc in criteria.items():
+        label = to_collapsed.get(name)
+        if label is None:
+            collapsed[name] = desc
+        elif label not in collapsed:
+            collapsed[label] = _COLLAPSED_CRITERIA[label]
+    return collapsed
+
+
+def resolve_direction(perception, fallback: str) -> tuple[str, str]:
+    """Pick "left"/"right" for a direction-free label from real perception:
+    the nearest off-center enemy, else the nearest off-center pickup, else
+    the only open side, else ``fallback`` (the caller passes the last side
+    used, so ties keep sweeping one way instead of sawing back and forth).
+    Returns ``(side, why)``."""
+    for kind, items in (("enemy", perception.enemies), ("pickup", perception.pickups)):
+        for item in items:
+            if item.bearing in _LEFT_BEARINGS:
+                return "left", kind
+            if item.bearing in _RIGHT_BEARINGS:
+                return "right", kind
+    if perception.open_left and not perception.open_right:
+        return "left", "open_side"
+    if perception.open_right and not perception.open_left:
+        return "right", "open_side"
+    return fallback, "sticky"
 
 
 def _render_reasoning(probabilities: dict, confidence: float | None) -> str | None:
@@ -205,8 +270,17 @@ class LayaAgent:
         confidence_threshold: float = 0.15,
         use_shoot_gate: bool = True,
         shoot_gate_threshold: float = _SHOOT_GATE_THRESHOLD,
+        direction_mode: DirectionMode = "model",
+        # A stuntd-trained movement head (scripts/distill_movement_head.py's
+        # --out directory). When set, the movement question is answered by
+        # Laya's frozen encoder plus that head, through stuntd's Decider (a
+        # second model instance, so the zero-shot shoot gate below keeps the
+        # checkpoint's own head). Needs stuntd and laya>=0.3.4.
+        movement_head: str | None = None,
     ):
         self.action_set = action_set
+        self.direction_mode = direction_mode
+        self._last_side = "right"
         self.confidence_mode = confidence_mode
         self.confidence_threshold = confidence_threshold
         # See the shoot-gate comment block above build_criteria(): shoot/
@@ -221,6 +295,10 @@ class LayaAgent:
         self.shoot_gate_threshold = shoot_gate_threshold
         self._combat_action = _COMBAT_ACTION[action_set]
         self._criteria = build_criteria(action_set)
+        self._movement_criteria = build_movement_criteria(action_set)
+        if direction_mode == "resolved":
+            self._criteria = collapse_directions(self._criteria)
+            self._movement_criteria = collapse_directions(self._movement_criteria)
         self._questions = {
             QUESTION_ID: {
                 "type": "choice",
@@ -231,7 +309,6 @@ class LayaAgent:
                 "criteria": self._criteria,
             }
         }
-        self._movement_criteria = build_movement_criteria(action_set)
         self._movement_questions = {
             QUESTION_ID: {
                 "type": "choice",
@@ -251,6 +328,15 @@ class LayaAgent:
         # mode the caller is experimenting with for movement/logging.
         self._gate_encoder = StateEncoder(EncoderConfig(memory_mode="stateless"))
         self.agent = laya.load(model_id, device=device)
+        self._head_decider = None
+        if movement_head is not None:
+            from stuntd.serve.decider import Decider
+
+            head_dir = Path(movement_head)
+            meta = json.loads((head_dir / "meta.json").read_text())
+            self._head_path = head_dir / "head.safetensors"
+            self._head_model = SimpleNamespace(field=meta["field"], labels=tuple(meta["labels"]), temperature=1.0)
+            self._head_decider = Decider(model_id, device or "auto")
 
     def reset(self) -> None:
         """Mostly a no-op — see this module's docstring for why laya.Agent
@@ -262,11 +348,27 @@ class LayaAgent:
         once per episode (see controller.py), same as every other
         controller here."""
         self._gate_encoder.reset()
+        self._last_side = "right"
 
     def decide(self, perception, encoded_state: str) -> Decision:
         if not self.use_shoot_gate:
-            return self._decide_single_choice(encoded_state)
-        return self._decide_with_shoot_gate(perception, encoded_state)
+            decision = self._decide_single_choice(encoded_state)
+        else:
+            decision = self._decide_with_shoot_gate(perception, encoded_state)
+        return self._resolve_direction(decision, perception)
+
+    def _resolve_direction(self, decision: Decision, perception) -> Decision:
+        """direction_mode="resolved" only: map a direction-free label
+        (e.g. "strafe") onto its concrete left/right action. A no-op for
+        every other label and for direction_mode="model"."""
+        pair = _DIRECTIONAL_LABELS.get(decision.action) if self.direction_mode == "resolved" else None
+        if pair is None:
+            return decision
+        side, why = resolve_direction(perception, self._last_side)
+        self._last_side = side
+        action = pair[0] if side == "left" else pair[1]
+        reasoning = f"{decision.reasoning or ''}  [{decision.action} -> {action} ({why})]".strip()
+        return Decision(action, decision.confidence, decision.latency_ms, reasoning, decision.raw)
 
     def _decide_single_choice(self, encoded_state: str) -> Decision:
         """The original design: one `choice` call over every label,
@@ -333,12 +435,19 @@ class LayaAgent:
             reasoning = f"should_shoot={shoot_prob_str} (>= {self.shoot_gate_threshold}) -> {action}"
             raw = {"gate": gate_response}
         else:
-            move_response = self.agent.predict(encoded_state, self._movement_questions)
+            if self._head_decider is not None:
+                verdict = self._head_decider.decide(self._head_model, self._head_path, encoded_state)
+                labels = self._head_model.labels
+                action, confidence = labels[verdict.label], verdict.confidence
+                probabilities = dict(zip(labels, verdict.probabilities))
+                move_response = {"answers": {QUESTION_ID: {"choice": action, "head": str(self._head_path)}}}
+            else:
+                move_response = self.agent.predict(encoded_state, self._movement_questions)
+                move_answer = (move_response.get("answers") or {}).get(QUESTION_ID) or {}
+                action = move_answer.get("choice")
+                confidence = move_answer.get("confidence")
+                probabilities = move_answer.get("probabilities") or {}
             latency_ms = (time.perf_counter() - t0) * 1000.0
-            move_answer = (move_response.get("answers") or {}).get(QUESTION_ID) or {}
-            action = move_answer.get("choice")
-            confidence = move_answer.get("confidence")
-            probabilities = move_answer.get("probabilities") or {}
 
             if action is None or action not in self._movement_criteria:
                 action = "wait"

@@ -23,6 +23,7 @@ from . import wayfinding
 from .doom_env import DoomEnv
 from .laya_agent import Decision
 from .perception import EnemyPercept, Perception, PerceptionConfig, perceive
+from .planner import FrontierPlanner, FrontierPlannerConfig, door_like_boxes
 from .state_encoder import StateEncoder, summarize_result
 
 
@@ -88,8 +89,8 @@ class StuckRecoveryConfig:
 
     A second, real "wall-hugging" freeze was found later by watching a
     fresh ``--scenario level`` run with ``override_reason`` logging added
-    (see the README's "Real bug: wall-hugging" section for the exact
-    step-by-step data): at one fixed position, ``PATH left``/``PATH
+    (regression test: tests/test_controller.py's wall-hugging tests): at
+    one fixed position, ``PATH left``/``PATH
     right`` kept reporting the same tied value (open/open, so
     ``_recovery_turn``'s "which side has more open room" fallback had
     nothing to prefer and fell back to alternating by ``step % 2``) —
@@ -157,8 +158,7 @@ class TurnLoopRecoveryConfig:
     ``--scenario level`` run get stuck in a corner where Laya kept
     choosing ``turn_left_small`` turn after turn on its own. That
     original condition missed a second, distinct real freeze found later
-    by re-running with ``override_reason`` logging added (see the
-    README's "Real bug: wall-hugging" section for the actual data): at one
+    by re-running with ``override_reason`` logging added: at one
     fixed (x, y), Laya kept proposing ``move_forward``/``strafe_left`` —
     never a turn — every single step for 79 consecutive steps, while
     StuckRecoveryConfig's own no-progress check *overrode* every one of
@@ -218,8 +218,7 @@ class ExplorationNudgeConfig:
 class FrontierExplorationConfig:
     """Makes ExplorationNudgeConfig's override directed instead of blind,
     using ViZDoom's ANGLE game variable — verified empirically first (see
-    ``wayfinding.py``'s module docstring and the README's "Verified: ANGLE's
-    real sign convention" section for the actual printed evidence: real
+    ``wayfinding.py``'s module docstring for the actual printed evidence: real
     ``turn_left``/``turn_right`` actions against a real DoomEnv reliably
     increased/decreased ANGLE by ~10.5 degrees per action, wrapping
     0-360, and real POSITION_X/Y deltas after ``move_forward`` matched
@@ -359,10 +358,104 @@ class DoorUseConfig:
     decision (or a `use` Laya already chose on its own) is left alone.
     Logged the same way as every other net here: `overridden=True`,
     `proposed_action` kept as what Laya actually chose.
+
+    ``aim=True`` squares up before pressing: Doom's use ray is a 64-unit
+    line along the player's exact facing, so an off-angle press hits the
+    door frame instead of the door. Real case, MAP01 seeds 5000/5001 (both
+    stuck at 26 cells): the only door out of the start area is at x=736;
+    the agent reached (688, -113) facing 33 degrees, pressed use, hit the
+    frame, turned away and never came back. Replaying that exact episode
+    and turning to 0 degrees before pressing walked straight through to
+    x=942; the same replay without the press stayed blocked at x=688.
+    So the sequence is: turn square to the cardinal heading nearest the
+    current facing (most Doom walls are axis-aligned, and that's the wall
+    being pushed against), press use, and if the wall ahead clears within
+    ``open_wait_steps`` walk through for ``walk_through_steps`` (if
+    squaring up leaves no wall ahead, there's nothing to press). Measured
+    on the same door: centre-row depth went 7 -> 871 units within 4 tics
+    of the press (and stayed 7 on a plain wall), so one check is enough and
+    a plain wall costs ~2-4 steps. A (cell, heading) pair that failed is
+    never retried. Two costlier variants lost coverage by eating 270-470
+    steps per episode: a 6-step wait with a second heading, and ranking
+    headings by unvisited cells (which turned the agent toward open space,
+    not the wall). Any higher-priority net (retreat, threat engagement)
+    aborts the sequence.
+
+    Off by default: the final version still lost on a paired 10-episode,
+    1,200-step MAP01 run (``autoresearch run door_use_aimed``): new cells
+    29.7 -> 24.4 (-5.3 +/- 8.6, worse on 9/10 seeds), completion 0/10 both.
+    It fixes the press at the door but costs time at every other wall, and
+    the agent rarely reaches the door at all (17 of 1,200 steps on seed
+    5000) -- getting there, not opening it, is the bigger gap.
     """
 
     enabled: bool = True
     stall_threshold: int = 3
+    aim: bool = False
+    aim_tolerance_deg: float = 4.0
+    max_aim_steps: int = 12
+    open_wait_steps: int = 2
+    walk_through_steps: int = 6
+
+
+@dataclass(frozen=True)
+class DoorUseState:
+    """Progress through one aimed door-use sequence (see DoorUseConfig)."""
+
+    targets: tuple[float, ...]
+    index: int = 0
+    phase: str = "aim"  # "aim" -> "wait_open" -> "walk"
+    counter: int = 0
+
+
+def _door_targets(
+    perception: Perception, cell_size: float, tried: set[tuple[wayfinding.Cell, float]], limit: int = 1
+) -> tuple[float, ...]:
+    """Cardinal headings to try a door-use sequence toward, closest to the
+    current facing first, skipping any already tried from this cell."""
+    cell = wayfinding.cell_of(perception.x, perception.y, cell_size)
+    fresh = [h for h in (0.0, 90.0, 180.0, 270.0) if (cell, h) not in tried]
+    return tuple(sorted(fresh, key=lambda h: abs(wayfinding.angular_diff(perception.angle, h)))[:limit])
+
+
+def _door_use_step(
+    perception: Perception, state: DoorUseState, config: DoorUseConfig, action_set: str
+) -> tuple[str | None, DoorUseState | None, float | None]:
+    """Advance one aimed door-use sequence by one step. Returns ``(action,
+    next_state, failed_heading)``: action is None once the sequence is
+    over (the caller falls through to its other nets), and failed_heading
+    is the target just given up on after its use never cleared the wall,
+    for the caller to remember. Pure, so it's unit-tested without a game."""
+    if state.phase == "aim":
+        target = state.targets[state.index]
+        aimed = abs(wayfinding.angular_diff(perception.angle, target)) <= config.aim_tolerance_deg
+        if aimed or state.counter >= config.max_aim_steps:
+            if not perception.wall_near:
+                # Squaring up turned away from the wall into open space:
+                # nothing to press, and "wall cleared" would falsely read
+                # as a door opening.
+                return None, None, None
+            return "use", replace(state, phase="wait_open", counter=0), None
+        return (
+            wayfinding.fine_turn_action(perception.angle, target, action_set),
+            replace(state, counter=state.counter + 1),
+            None,
+        )
+    if state.phase == "wait_open":
+        if not perception.wall_near:
+            return "move_forward", replace(state, phase="walk", counter=1), None
+        if state.counter + 1 < config.open_wait_steps:
+            return "wait", replace(state, counter=state.counter + 1), None
+        failed = state.targets[state.index]
+        if state.index + 1 < len(state.targets):
+            action, next_state, _ = _door_use_step(
+                perception, DoorUseState(state.targets, state.index + 1), config, action_set
+            )
+            return action, next_state, failed
+        return None, None, failed
+    if state.counter < config.walk_through_steps and not perception.wall_near:
+        return "move_forward", replace(state, counter=state.counter + 1), None
+    return None, None, None
 
 
 @dataclass
@@ -396,7 +489,7 @@ class ThreatEngagementConfig:
     ``strafe_left``.
 
     Real motivation, not a hypothetical: a full `--scenario level` run
-    (see the README's "Verified behaviour") escaped the corner-spinning
+    escaped the corner-spinning
     bug and travelled 10,121 distance units, one real kill, 4 items
     collected — and then died anyway, `damage_given=35` vs
     `damage_taken=120`, chipped from 51 health to 0 by one ordinary
@@ -477,7 +570,7 @@ class LowHealthRetreatConfig:
     above, not a duplicate of it: that one turns to *fight* an off-center
     threat while health is still reasonable; this one disengages once
     health drops low regardless of bearing — including the exact tail of
-    the real death this README documents (health 51 → 10 → 4 → 0 against
+    the real death ThreatEngagementConfig documents (health 51 → 10 → 4 → 0 against
     one zombieman, never disengaging even once truly critical).
     """
 
@@ -539,6 +632,9 @@ class EpisodeResult:
     total_reward: float
     died: bool
     completed: bool = False
+    # Steps whose executed action came from a safety net rather than the
+    # agent's own proposal -- how much of the play was actually the agent's.
+    overridden_steps: int = 0
     action_counts: dict[str, int] = field(default_factory=dict)
     mean_confidence: float | None = None
     mean_latency_ms: float = 0.0
@@ -705,18 +801,7 @@ def _start_exploration_override(
         targets = tuple((perception.angle + offset) % 360.0 for offset in secret_search.headings_deg)
         action, next_index = _secret_search_action(perception, targets, 0, action_set)
         return action, (targets if next_index is not None else None), (next_index or 0)
-    if frontier_exploration.enabled:
-        target_heading = wayfinding.best_exploration_heading(
-            perception.x,
-            perception.y,
-            perception.angle,
-            encoder.visited_cells,
-            encoder.config.area_cell_size,
-            lookahead_distance=encoder.config.area_cell_size * frontier_exploration.lookahead_cells,
-        )
-        if target_heading is not None:
-            return wayfinding.turn_action_for_heading(perception.angle, target_heading, action_set), None, 0
-    return _recovery_turn(perception, action_set, step), None, 0
+    return _exploration_turn(perception, encoder, frontier_exploration, action_set, step), None, 0
 
 
 def _wall_follow_action(perception: Perception, hand: str, action_set: str) -> str:
@@ -760,6 +845,7 @@ def run_episode(
     frontier_exploration: FrontierExplorationConfig | None = None,
     secret_search: SecretSearchConfig | None = None,
     wall_follow: WallFollowConfig | None = None,
+    frontier_planner: FrontierPlannerConfig | None = None,
 ) -> tuple[EpisodeResult, list[StepRecord]]:
     perception_config = perception_config or PerceptionConfig()
     stuck_recovery = stuck_recovery if stuck_recovery is not None else StuckRecoveryConfig()
@@ -772,6 +858,8 @@ def run_episode(
     frontier_exploration = frontier_exploration if frontier_exploration is not None else FrontierExplorationConfig()
     secret_search = secret_search if secret_search is not None else SecretSearchConfig()
     wall_follow = wall_follow if wall_follow is not None else WallFollowConfig()
+    frontier_planner = frontier_planner if frontier_planner is not None else FrontierPlannerConfig()
+    planner = FrontierPlanner(frontier_planner, cell_size=encoder.config.area_cell_size)
 
     env.new_episode()
     agent.reset()
@@ -791,6 +879,8 @@ def run_episode(
     nudge_without_new_area = 0
     secret_search_failures = 0
     wall_follow_steps_left = 0
+    door_use_state: DoorUseState | None = None
+    door_use_tried: set[tuple[wayfinding.Cell, float]] = set()
     keys_held: set[str] = set()
 
     records: list[StepRecord] = []
@@ -805,7 +895,18 @@ def run_episode(
         if starting_ammo is None:
             starting_ammo = perception.ammo
 
-        encoded = encoder.encode(perception, prev_perception, last_action, last_result, frozenset(keys_held))
+        if frontier_planner.enabled:
+            if step == 0 and frontier_planner.door_first:
+                planner.doors = door_like_boxes(
+                    getattr(state, "sectors", None), frontier_planner.door_max_depth, frontier_planner.door_min_width
+                )
+            planner.observe(perception)
+        frontier_hint = None
+        if frontier_planner.enabled and encoder.config.include_frontier_hint:
+            frontier_hint = planner.hint(perception)
+        encoded = encoder.encode(
+            perception, prev_perception, last_action, last_result, frozenset(keys_held), frontier_hint=frontier_hint
+        )
         if perception.enemies or perception.pickups or encoder.last_area_new is not False:
             revisited_streak = 0
         else:
@@ -826,6 +927,8 @@ def run_episode(
         overridden = False
         override_reason = ""
         final_action = decision.action
+        door_step = None
+        door_targets: tuple[float, ...] = ()
         # Priority order for the first four nets: survival (low-health
         # retreat) outranks engaging a threat, which outranks reacting to
         # an unseen attacker, which outranks plain navigation recovery —
@@ -859,8 +962,31 @@ def run_episode(
             final_action = _recovery_turn(perception, env.config.action_set, step)
             overridden = True
             override_reason = "threat_response"
-        elif _should_try_use(door_use, perception, wall_near_streak, decision.action):
-            final_action = "use"
+        elif planner.mission is not None and (plan_action := planner.step(perception, env.config.action_set)):
+            # A FrontierPlanner mission already under way (see planner.py):
+            # it handles its own stalls, so it outranks the stall/turn nets.
+            final_action = plan_action
+            overridden = True
+            override_reason = "frontier_planner"
+        elif (
+            door_use_state is not None
+            and (door_step := _door_use_step(perception, door_use_state, door_use, env.config.action_set))[0]
+            is not None
+        ):
+            final_action, door_use_state = door_step[0], door_step[1]
+            overridden = True
+            override_reason = "door_use"
+        elif _should_try_use(door_use, perception, wall_near_streak, decision.action) and (
+            not door_use.aim
+            or (
+                door_targets := _door_targets(perception, encoder.config.area_cell_size, door_use_tried)
+            )
+        ):
+            if door_use.aim:
+                door_step = _door_use_step(perception, DoorUseState(door_targets), door_use, env.config.action_set)
+                final_action, door_use_state = door_step[0], door_step[1]
+            else:
+                final_action = "use"
             overridden = True
             override_reason = "door_use"
         elif _should_override_for_turn_loop(turn_loop_recovery, consecutive_turn_steps, decision.action):
@@ -906,7 +1032,17 @@ def run_episode(
             overridden = True
             override_reason = "secret_search"
         elif _should_nudge_exploration(exploration_nudge, perception, revisited_streak, decision.action):
-            if wall_follow.enabled and secret_search_failures >= wall_follow.activate_after_searches:
+            if (
+                frontier_planner.enabled
+                and planner.start_mission(perception)
+                and (plan_action := planner.step(perception, env.config.action_set))
+            ):
+                # Circling: go to the nearest untried edge of explored space
+                # rather than nudging a heading (see planner.py).
+                final_action = plan_action
+                overridden = True
+                override_reason = "frontier_planner"
+            elif wall_follow.enabled and secret_search_failures >= wall_follow.activate_after_searches:
                 # Plain nudging AND a full secret-door sweep have both
                 # already come up empty enough times — try the classic
                 # wall-following maze rule instead of nudging again (see
@@ -929,6 +1065,12 @@ def run_episode(
                     override_reason = "exploration_nudge"
                     nudge_without_new_area += 1
             revisited_streak = 0
+
+        if door_step is not None and door_step[2] is not None:
+            door_cell = wayfinding.cell_of(perception.x, perception.y, encoder.config.area_cell_size)
+            door_use_tried.add((door_cell, door_step[2]))
+        if override_reason != "door_use":
+            door_use_state = None  # finished, or pre-empted by a higher-priority net
 
         reward = env.execute(final_action)
 
@@ -1046,6 +1188,7 @@ def run_episode(
         total_reward=env.total_reward(),
         died=died,
         completed=completed,
+        overridden_steps=sum(r.overridden for r in records),
         action_counts=action_counts,
         mean_confidence=sum(confidences) / len(confidences) if confidences else None,
         mean_latency_ms=sum(latencies) / len(latencies) if latencies else 0.0,

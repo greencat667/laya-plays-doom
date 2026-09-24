@@ -54,8 +54,7 @@ class DoomEnvConfig:
     seed: int | None = None
     doom_map: str | None = None
     screen_resolution: vzd.ScreenResolution = vzd.ScreenResolution.RES_320X240
-    # Off by default — see scripts/probe_automap.py and the README's
-    # "Automap buffer investigation" section for why: real captures showed
+    # Off by default — see scripts/probe_automap.py for why: real captures showed
     # it only draws wall-line geometry the player has already been near
     # (background fill color is identical for revealed and undiscovered
     # regions — it's not a simple "black = unexplored" mask), and it added
@@ -64,6 +63,9 @@ class DoomEnvConfig:
     # (not hardcoded False in _configure) so the probe script can still
     # exercise it through the same DoomEnv real runs use, without a
     # second hand-built vzd.DoomGame.
+    # Level sector geometry in each state -- only FrontierPlannerConfig.door_first
+    # reads it (once, at episode start); off otherwise.
+    sectors_info_enabled: bool = False
     automap_buffer_enabled: bool = False
     automap_mode: "vzd.AutomapMode | None" = None
 
@@ -104,7 +106,7 @@ class DoomEnv:
             game.set_automap_mode(self.config.automap_mode)
         game.set_audio_buffer_enabled(False)
         game.set_objects_info_enabled(False)
-        game.set_sectors_info_enabled(False)
+        game.set_sectors_info_enabled(self.config.sectors_info_enabled)
 
         game.set_available_buttons(list(actions_mod.ALL_BUTTONS))
         game.set_available_game_variables(list(TRACKED_GAME_VARIABLES))

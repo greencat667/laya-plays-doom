@@ -1,6 +1,6 @@
 """Ad-hoc probe for tuning Laya's `choice`/`noul` question wording against
-8 hand-built, characteristic Doom world-states (the same set used in the
-README's "honest finding" section). Loads the real model once and reports
+8 hand-built, characteristic Doom world-states (the source of the 0/8 and
+shoot-gate numbers quoted in laya_agent.py and the README). Loads the real model once and reports
 REAL returned probabilities/confidence for each variant — nothing here is
 invented or hand-adjusted after the fact.
 

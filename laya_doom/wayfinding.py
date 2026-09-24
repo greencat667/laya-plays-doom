@@ -3,8 +3,8 @@ perception.py's "never trust ViZDoom's ANGLE sign convention" rule, and
 built only after verifying that convention empirically, not from the
 ViZDoom docs alone.
 
-Real, printed evidence (see scripts/verify_angle.py and the README's
-"Verified: ANGLE's real sign convention" section for the actual output):
+Real, printed evidence (reproduce with scripts/verify_angle.py and
+scripts/verify_angle_movement.py):
 
 - A fresh episode starts at ANGLE 0.0.
 - Five real ``turn_left`` actions (env.execute(...), 3 tics each) against a
@@ -162,6 +162,21 @@ def angular_diff(current_heading_deg: float, target_heading_deg: float) -> float
     docstring (turn_left increases ANGLE / CCW, turn_right decreases it /
     CW). Negative means turning right."""
     return (target_heading_deg - current_heading_deg + 180.0) % 360.0 - 180.0
+
+
+def fine_turn_action(current_heading_deg: float, target_heading_deg: float, action_set: str) -> str:
+    """A turn toward the target sized to the remaining error (large > 35
+    degrees > normal > 12 degrees > small), so precise aiming converges
+    instead of overshooting the way repeated fixed large turns would."""
+    diff = angular_diff(current_heading_deg, target_heading_deg)
+    side = "left" if diff > 0 else "right"
+    if action_set == "stage1":
+        return f"turn_{side}"
+    if abs(diff) > 35:
+        return f"turn_{side}_large"
+    if abs(diff) > 12:
+        return f"turn_{side}"
+    return f"turn_{side}_small"
 
 
 def turn_action_for_heading(current_heading_deg: float, target_heading_deg: float, action_set: str) -> str:
